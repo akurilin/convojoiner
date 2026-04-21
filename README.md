@@ -51,9 +51,14 @@ column per session or subagent that has events on that page, grouped by minute s
 concurrent work stays visually separated without putting thousands of cards in
 the DOM at once.
 
-The page includes client-side filters for provider, day, repo folder, event kind,
-session, search text, and page size. It does not load external assets or make
-network requests.
+User and assistant messages render expanded by default and are not part of the
+detail hide/show filter. Technical details such as commands, results, patches,
+web calls, thinking, status, and other tools render as compact expandable rows
+and can be hidden by category.
+
+The page includes client-side filters for provider, day, repo folder, detail
+category, session, search text, and page size. It does not load external assets
+or make network requests.
 
 ## Source Stores
 

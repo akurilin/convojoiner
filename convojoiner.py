@@ -1164,6 +1164,7 @@ HTML_TEMPLATE = r"""<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Convojoiner Timeline</title>
+<link rel="icon" href="data:,">
 <style>
 :root {
   --bg: #f5f5f5;
@@ -1328,6 +1329,7 @@ main { max-width: 1680px; margin: 0 auto; padding: 16px; }
 .event-card.error { background: var(--error-bg); border-left-color: #c62828; }
 .event-head {
   display: flex;
+  align-items: center;
   justify-content: space-between;
   gap: 10px;
   padding: 7px 10px;
@@ -1335,10 +1337,17 @@ main { max-width: 1680px; margin: 0 auto; padding: 16px; }
   font-size: 0.78rem;
 }
 .event-title {
+  min-width: 0;
   font-weight: 700;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.event-actions {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 6px;
 }
 .event-time {
   color: var(--muted);
@@ -1361,30 +1370,20 @@ main { max-width: 1680px; margin: 0 auto; padding: 16px; }
   font-size: 0.8rem;
   line-height: 1.45;
 }
-.event-body.collapsed {
-  max-height: 260px;
-  overflow: hidden;
-  position: relative;
+.detail-collapsed {
+  box-shadow: none;
 }
-.event-body.collapsed::after {
-  content: "";
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  height: 58px;
-  background: linear-gradient(to bottom, transparent, rgba(255,255,255,0.92));
+.detail-collapsed .event-head {
+  padding-block: 5px;
 }
-.tool_use .event-body.collapsed::after,
-.command .event-body.collapsed::after,
-.file_edit .event-body.collapsed::after { background: linear-gradient(to bottom, transparent, #f3e5f5); }
-.tool_result .event-body.collapsed::after { background: linear-gradient(to bottom, transparent, #e8f5e9); }
-.error .event-body.collapsed::after { background: linear-gradient(to bottom, transparent, #ffebee); }
+.detail-collapsed .event-title {
+  font-weight: 600;
+}
 .expand {
-  display: block;
-  width: calc(100% - 20px);
-  margin: 0 10px 10px;
-  font-size: 0.8rem;
+  flex: 0 0 auto;
+  padding: 2px 7px;
+  font-size: 0.72rem;
+  line-height: 1.25;
 }
 .dense .event-body { padding: 7px; font-size: 0.88rem; }
 .dense .event-head { padding: 5px 8px; }
@@ -1434,8 +1433,8 @@ main { max-width: 1680px; margin: 0 auto; padding: 16px; }
         <div class="chips" id="repo-filter"></div>
       </div>
       <div class="control-group">
-        <div class="control-title">Kind</div>
-        <div class="chips" id="kind-filter"></div>
+        <div class="control-title">Details</div>
+        <div class="chips" id="detail-filter"></div>
       </div>
       <div class="control-group">
         <div class="control-title">Session</div>
@@ -1456,9 +1455,36 @@ main { max-width: 1680px; margin: 0 auto; padding: 16px; }
 const data = JSON.parse(document.getElementById("transcript-data").textContent);
 const state = { query: "", dense: false, page: 1, pageSize: 250 };
 const sessionById = new Map(data.sessions.map(session => [session.id, session]));
+const DETAIL_GROUPS = [
+  { id: "commands", label: "Commands" },
+  { id: "results", label: "Results" },
+  { id: "patches", label: "Patches" },
+  { id: "web", label: "Web" },
+  { id: "thinking", label: "Thinking" },
+  { id: "status", label: "Status" },
+  { id: "tools", label: "Other tools" }
+];
+const detailGroupById = new Map(DETAIL_GROUPS.map(group => [group.id, group]));
 
 function unique(values) {
   return Array.from(new Set(values.filter(Boolean))).sort();
+}
+
+function isCoreEvent(event) {
+  return event.kind === "message" && (event.role === "user" || event.role === "assistant");
+}
+
+function detailGroupForEvent(event) {
+  if (isCoreEvent(event)) return "core";
+  const title = String(event.title || "").toLowerCase();
+  if (event.kind === "command") return "commands";
+  if (event.kind === "file_edit") return "patches";
+  if (event.kind === "tool_result" && title.includes("web")) return "web";
+  if (event.kind === "tool_use" && title.includes("web")) return "web";
+  if (event.kind === "tool_result") return "results";
+  if (event.kind === "thinking") return "thinking";
+  if (event.kind === "status") return "status";
+  return "tools";
 }
 
 function escapeHtml(value) {
@@ -1493,7 +1519,10 @@ function initFilters() {
   makeCheckboxes("provider-filter", "provider", unique(data.sessions.map(s => s.provider)));
   makeCheckboxes("day-filter", "day", unique(data.events.map(e => e.day)));
   makeCheckboxes("repo-filter", "repo", unique(data.sessions.map(s => s.repo)), value => value.split("/").filter(Boolean).slice(-2).join("/") || value);
-  makeCheckboxes("kind-filter", "kind", unique(data.events.map(e => e.kind)), value => value.replaceAll("_", " "));
+  const detailGroups = DETAIL_GROUPS
+    .map(group => group.id)
+    .filter(id => data.events.some(event => detailGroupForEvent(event) === id));
+  makeCheckboxes("detail-filter", "detail", detailGroups, value => detailGroupById.get(value)?.label || value);
   makeCheckboxes("session-filter", "session", data.sessions.map(s => s.id), value => sessionById.get(value)?.label || value);
 
   document.getElementById("search-input").addEventListener("input", event => {
@@ -1516,7 +1545,7 @@ function filteredEvents() {
   const providers = selectedValues("provider");
   const days = selectedValues("day");
   const repos = selectedValues("repo");
-  const kinds = selectedValues("kind");
+  const details = selectedValues("detail");
   const sessions = selectedValues("session");
   return data.events.filter(event => {
     const session = sessionById.get(event.session_id);
@@ -1524,7 +1553,7 @@ function filteredEvents() {
     if (!providers.has(event.provider)) return false;
     if (!days.has(event.day)) return false;
     if (!repos.has(session.repo)) return false;
-    if (!kinds.has(event.kind)) return false;
+    if (!isCoreEvent(event) && !details.has(detailGroupForEvent(event))) return false;
     if (!sessions.has(event.session_id)) return false;
     if (state.query) {
       const haystack = [
@@ -1631,41 +1660,53 @@ function renderLanes(sessions, events) {
 
 function renderEventCard(event) {
   const preKinds = new Set(["command", "tool_use", "tool_result", "file_edit", "status"]);
+  const isCore = isCoreEvent(event);
+  const detailGroup = detailGroupForEvent(event);
   const body = preKinds.has(event.kind)
     ? `<pre>${escapeHtml(event.body)}</pre>`
     : escapeHtml(event.body);
   const classes = [
     "event-card",
+    isCore ? "core-event" : "detail-event",
+    isCore ? "detail-expanded" : "detail-collapsed",
+    `detail-${detailGroup}`,
     event.role,
     event.kind,
     event.provider,
     event.is_error ? "error" : ""
   ].join(" ");
+  const detailsToggle = isCore ? "" : `<button class="expand" type="button" aria-expanded="false">Show details</button>`;
   return `
     <article class="${classes}" id="${escapeHtml(event.id)}">
       <div class="event-head">
         <div class="event-title">${escapeHtml(event.title)}</div>
-        <a class="event-time" href="#${escapeHtml(event.id)}">${escapeHtml(event.display_time.split(" ")[1] || event.display_time)}</a>
+        <div class="event-actions">
+          <a class="event-time" href="#${escapeHtml(event.id)}">${escapeHtml(event.display_time.split(" ")[1] || event.display_time)}</a>
+          ${detailsToggle}
+        </div>
       </div>
-      <div class="event-body collapsed">${body}</div>
-      <button class="expand" type="button">Show more</button>
+      <div class="event-body"${isCore ? "" : " hidden"}>${body}</div>
     </article>
   `;
 }
 
 function wireExpandButtons() {
-  document.querySelectorAll(".event-card").forEach(card => {
+  document.querySelectorAll(".event-card.detail-event").forEach(card => {
     const body = card.querySelector(".event-body");
     const button = card.querySelector(".expand");
     if (!body || !button) return;
-    if (body.scrollHeight <= 270) {
-      body.classList.remove("collapsed");
-      button.style.display = "none";
-      return;
-    }
+
+    const setExpanded = expanded => {
+      card.classList.toggle("detail-collapsed", !expanded);
+      card.classList.toggle("detail-expanded", expanded);
+      body.hidden = !expanded;
+      button.textContent = expanded ? "Hide details" : "Show details";
+      button.setAttribute("aria-expanded", expanded ? "true" : "false");
+    };
+
+    setExpanded(!card.classList.contains("detail-collapsed"));
     button.addEventListener("click", () => {
-      const collapsed = body.classList.toggle("collapsed");
-      button.textContent = collapsed ? "Show more" : "Show less";
+      setExpanded(card.classList.contains("detail-collapsed"));
     });
   });
 }
