@@ -1260,26 +1260,27 @@ button {
 }
 button:hover { background: #f0f3f6; }
 main { max-width: 1680px; margin: 0 auto; padding: 16px; }
-.session-strip {
-  display: flex;
-  gap: 8px;
-  overflow-x: auto;
-  padding-bottom: 10px;
-  margin-bottom: 12px;
-}
-.session-pill {
-  min-width: 220px;
-  max-width: 320px;
-  background: var(--card);
-  border: 1px solid var(--line);
-  border-left: 4px solid var(--assistant-border);
-  border-radius: 8px;
-  padding: 9px 10px;
-}
-.session-pill.claude { border-left-color: var(--claude); }
-.session-pill.codex { border-left-color: var(--codex); }
 .session-title { font-weight: 700; font-size: 0.9rem; }
 .session-meta { color: var(--muted); font-size: 0.78rem; margin-top: 3px; }
+.pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 12px 0;
+}
+.pager-info {
+  color: var(--muted);
+  font-size: 0.88rem;
+  min-width: 220px;
+  text-align: center;
+}
+.pager button:disabled {
+  color: var(--muted);
+  cursor: default;
+  opacity: 0.55;
+}
 .timeline-scroll { overflow-x: auto; padding-bottom: 32px; }
 .lane-grid {
   display: grid;
@@ -1385,13 +1386,6 @@ main { max-width: 1680px; margin: 0 auto; padding: 16px; }
   margin: 0 10px 10px;
   font-size: 0.8rem;
 }
-.feed { max-width: 980px; margin: 0 auto; }
-.feed .event-card { margin-bottom: 12px; }
-.feed-session {
-  color: var(--muted);
-  font-size: 0.78rem;
-  padding: 0 10px 8px;
-}
 .dense .event-body { padding: 7px; font-size: 0.88rem; }
 .dense .event-head { padding: 5px 8px; }
 .empty {
@@ -1415,15 +1409,17 @@ main { max-width: 1680px; margin: 0 auto; padding: 16px; }
     <div class="summary" id="summary"></div>
     <div class="controls">
       <div class="control-group">
-        <div class="control-title">View</div>
-        <select id="view-select">
-          <option value="lanes">Lanes</option>
-          <option value="feed">Feed</option>
-        </select>
-      </div>
-      <div class="control-group">
         <div class="control-title">Search</div>
         <input id="search-input" type="search" placeholder="Search transcript">
+      </div>
+      <div class="control-group">
+        <div class="control-title">Page Size</div>
+        <select id="page-size-select">
+          <option value="100">100 events</option>
+          <option value="250" selected>250 events</option>
+          <option value="500">500 events</option>
+          <option value="1000">1000 events</option>
+        </select>
       </div>
       <div class="control-group">
         <div class="control-title">Provider</div>
@@ -1458,16 +1454,11 @@ main { max-width: 1680px; margin: 0 auto; padding: 16px; }
 <script id="transcript-data" type="application/json">__DATA_JSON__</script>
 <script>
 const data = JSON.parse(document.getElementById("transcript-data").textContent);
-const state = { view: "lanes", query: "", dense: false };
+const state = { query: "", dense: false, page: 1, pageSize: 250 };
 const sessionById = new Map(data.sessions.map(session => [session.id, session]));
 
 function unique(values) {
   return Array.from(new Set(values.filter(Boolean))).sort();
-}
-
-function cssEscape(value) {
-  if (window.CSS && CSS.escape) return CSS.escape(value);
-  return String(value).replace(/[^a-zA-Z0-9_-]/g, "\\$&");
 }
 
 function escapeHtml(value) {
@@ -1488,7 +1479,10 @@ function makeCheckboxes(containerId, name, values, labeler = value => value) {
       <span>${escapeHtml(labeler(value))}</span>
     </label>
   `).join("");
-  container.querySelectorAll("input").forEach(input => input.addEventListener("change", render));
+  container.querySelectorAll("input").forEach(input => input.addEventListener("change", () => {
+    state.page = 1;
+    render();
+  }));
 }
 
 function selectedValues(name) {
@@ -1502,12 +1496,14 @@ function initFilters() {
   makeCheckboxes("kind-filter", "kind", unique(data.events.map(e => e.kind)), value => value.replaceAll("_", " "));
   makeCheckboxes("session-filter", "session", data.sessions.map(s => s.id), value => sessionById.get(value)?.label || value);
 
-  document.getElementById("view-select").addEventListener("change", event => {
-    state.view = event.target.value;
-    render();
-  });
   document.getElementById("search-input").addEventListener("input", event => {
     state.query = event.target.value.toLowerCase().trim();
+    state.page = 1;
+    render();
+  });
+  document.getElementById("page-size-select").addEventListener("change", event => {
+    state.pageSize = Number(event.target.value);
+    state.page = 1;
     render();
   });
   document.getElementById("dense-toggle").addEventListener("change", event => {
@@ -1549,37 +1545,66 @@ function filteredEvents() {
 function render() {
   document.body.classList.toggle("dense", state.dense);
   const events = filteredEvents();
-  const activeSessionIds = unique(events.map(event => event.session_id));
+  const page = paginateEvents(events);
+  const activeSessionIds = unique(page.events.map(event => event.session_id));
   const activeSessions = data.sessions.filter(session => activeSessionIds.includes(session.id));
   document.getElementById("summary").textContent =
-    `${events.length} events in ${activeSessions.length} sessions. Sources copied to ${data.copy_root}`;
+    `${events.length} matching events · ${activeSessions.length} sessions on this page · sources copied to ${data.copy_root}`;
   const app = document.getElementById("app");
   if (!events.length) {
     app.innerHTML = `<div class="empty">No events match the current filters.</div>`;
     return;
   }
-  if (state.view === "feed") {
-    app.innerHTML = renderSessionStrip(activeSessions, events) + renderFeed(events);
-  } else {
-    app.innerHTML = renderSessionStrip(activeSessions, events) + renderLanes(activeSessions, events);
-  }
+  app.innerHTML = renderPager(page) + renderLanes(activeSessions, page.events) + renderPager(page);
+  wirePaginationButtons();
   wireExpandButtons();
 }
 
-function renderSessionStrip(sessions, events) {
-  const counts = new Map();
-  events.forEach(event => counts.set(event.session_id, (counts.get(event.session_id) || 0) + 1));
-  return `<div class="session-strip">${sessions.map(session => `
-    <div class="session-pill ${escapeHtml(session.provider)}" title="${escapeHtml(session.cwd)}">
-      <div class="session-title">${escapeHtml(session.label)}</div>
-      <div class="session-meta">${escapeHtml(session.provider)} · ${counts.get(session.id) || 0} events</div>
-      <div class="session-meta">${escapeHtml(session.repo)}</div>
-      ${session.summary ? `<div class="session-meta">${escapeHtml(session.summary)}</div>` : ""}
-    </div>
-  `).join("")}</div>`;
+function paginateEvents(events) {
+  const pageCount = Math.max(1, Math.ceil(events.length / state.pageSize));
+  state.page = Math.max(1, Math.min(state.page, pageCount));
+  const start = (state.page - 1) * state.pageSize;
+  const end = Math.min(start + state.pageSize, events.length);
+  return {
+    events: events.slice(start, end),
+    page: state.page,
+    pageCount,
+    start,
+    end,
+    total: events.length
+  };
+}
+
+function renderPager(page) {
+  return `
+    <nav class="pager" aria-label="Pagination">
+      <button type="button" data-page-action="first" ${page.page === 1 ? "disabled" : ""}>First</button>
+      <button type="button" data-page-action="prev" ${page.page === 1 ? "disabled" : ""}>Prev</button>
+      <div class="pager-info">Page ${page.page} of ${page.pageCount} · ${page.start + 1}-${page.end} of ${page.total}</div>
+      <button type="button" data-page-action="next" ${page.page === page.pageCount ? "disabled" : ""}>Next</button>
+      <button type="button" data-page-action="last" data-page-count="${page.pageCount}" ${page.page === page.pageCount ? "disabled" : ""}>Last</button>
+    </nav>
+  `;
+}
+
+function wirePaginationButtons() {
+  document.querySelectorAll("[data-page-action]").forEach(button => {
+    button.addEventListener("click", () => {
+      const action = button.dataset.pageAction;
+      if (action === "first") state.page = 1;
+      if (action === "prev") state.page -= 1;
+      if (action === "next") state.page += 1;
+      if (action === "last") state.page = Number(button.dataset.pageCount || state.page);
+      render();
+      window.scrollTo({ top: 0, behavior: "auto" });
+    });
+  });
 }
 
 function renderLanes(sessions, events) {
+  if (!sessions.length) {
+    return `<div class="empty">No sessions have events on this page.</div>`;
+  }
   const columns = `112px repeat(${sessions.length}, minmax(280px, 420px))`;
   const byMinute = new Map();
   events.forEach(event => {
@@ -1602,13 +1627,6 @@ function renderLanes(sessions, events) {
     return `<div class="time-cell">${escapeHtml(minute)}</div>${cells}`;
   }).join("");
   return `<div class="timeline-scroll"><div class="lane-grid" style="grid-template-columns: ${columns}">${headers}${rows}</div></div>`;
-}
-
-function renderFeed(events) {
-  return `<div class="feed">${events.map(event => {
-    const session = sessionById.get(event.session_id);
-    return renderEventCard(event) + `<div class="feed-session">${escapeHtml(session?.label || "")} · ${escapeHtml(session?.cwd || "")}</div>`;
-  }).join("")}</div>`;
 }
 
 function renderEventCard(event) {

@@ -46,15 +46,14 @@ python3 convojoiner.py --no-subagents
 
 ## Output
 
-The generated HTML has two views:
-
-- `Lanes`: one column per session or subagent, grouped by minute so concurrent
-  work stays visually separated.
-- `Feed`: one chronological stream across all providers and sessions.
+The generated HTML uses a paginated lane timeline. Each visible page renders one
+column per session or subagent that has events on that page, grouped by minute so
+concurrent work stays visually separated without putting thousands of cards in
+the DOM at once.
 
 The page includes client-side filters for provider, day, repo folder, event kind,
-session, and search text. It does not load external assets or make network
-requests.
+session, search text, and page size. It does not load external assets or make
+network requests.
 
 ## Source Stores
 
