@@ -1073,6 +1073,7 @@ def build_html_data(
                 "kind": event.kind,
                 "title": event.title,
                 "body": event.body,
+                "body_html": render_markdown(event.body) if event.kind in PROSE_KINDS else "",
                 "cwd": event.cwd,
                 "call_id": event.call_id,
                 "is_error": event.is_error,
@@ -1362,11 +1363,118 @@ def format_detail_stats(events: list[dict[str, Any]]) -> str:
     return " · ".join(f"{count} {label}" for label, count in sorted(counts.items()))
 
 
-def render_text_html(text: str) -> str:
-    paragraphs = [part.strip() for part in re.split(r"\n\s*\n", text or "") if part.strip()]
-    if not paragraphs:
+PROSE_KINDS = frozenset({"message", "thinking"})
+
+
+def render_markdown(text: str) -> str:
+    if not text:
         return ""
-    return "".join(f"<p>{html.escape(paragraph)}</p>" for paragraph in paragraphs)
+    lines = text.splitlines()
+    out: list[str] = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        fence = re.match(r"^```(\w*)\s*$", line)
+        if fence:
+            lang = fence.group(1)
+            i += 1
+            code_lines: list[str] = []
+            while i < len(lines) and not re.match(r"^```\s*$", lines[i]):
+                code_lines.append(lines[i])
+                i += 1
+            if i < len(lines):
+                i += 1
+            code_html = html.escape("\n".join(code_lines))
+            lang_attr = f' class="lang-{html.escape(lang)}"' if lang else ""
+            out.append(f"<pre><code{lang_attr}>{code_html}</code></pre>")
+            continue
+        heading = re.match(r"^(#{1,6})\s+(.+?)\s*#*\s*$", line)
+        if heading:
+            level = len(heading.group(1))
+            out.append(f"<h{level}>{render_inline_md(heading.group(2))}</h{level}>")
+            i += 1
+            continue
+        if line.startswith(">"):
+            quote_lines: list[str] = []
+            while i < len(lines) and lines[i].startswith(">"):
+                quote_lines.append(re.sub(r"^>\s?", "", lines[i]))
+                i += 1
+            quote_text = "\n".join(quote_lines).strip()
+            out.append(f"<blockquote><p>{render_inline_md(quote_text)}</p></blockquote>")
+            continue
+        if re.match(r"^\s*[-*+]\s+", line):
+            items: list[str] = []
+            while i < len(lines) and re.match(r"^\s*[-*+]\s+", lines[i]):
+                items.append(re.sub(r"^\s*[-*+]\s+", "", lines[i]))
+                i += 1
+            out.append(
+                "<ul>"
+                + "".join(f"<li>{render_inline_md(item)}</li>" for item in items)
+                + "</ul>"
+            )
+            continue
+        if re.match(r"^\s*\d+[.)]\s+", line):
+            items = []
+            while i < len(lines) and re.match(r"^\s*\d+[.)]\s+", lines[i]):
+                items.append(re.sub(r"^\s*\d+[.)]\s+", "", lines[i]))
+                i += 1
+            out.append(
+                "<ol>"
+                + "".join(f"<li>{render_inline_md(item)}</li>" for item in items)
+                + "</ol>"
+            )
+            continue
+        if not line.strip():
+            i += 1
+            continue
+        para_lines: list[str] = []
+        while i < len(lines) and lines[i].strip() and not _is_markdown_block_start(lines[i]):
+            para_lines.append(lines[i])
+            i += 1
+        out.append(f"<p>{render_inline_md(chr(10).join(para_lines))}</p>")
+    return "".join(out)
+
+
+def _is_markdown_block_start(line: str) -> bool:
+    return bool(
+        re.match(r"^```", line)
+        or re.match(r"^#{1,6}\s", line)
+        or line.startswith(">")
+        or re.match(r"^\s*[-*+]\s", line)
+        or re.match(r"^\s*\d+[.)]\s", line)
+    )
+
+
+def render_inline_md(text: str) -> str:
+    if not text:
+        return ""
+    code_spans: list[str] = []
+
+    def stash_code(match: re.Match[str]) -> str:
+        code_spans.append(html.escape(match.group(1)))
+        return f"\x00CODE{len(code_spans) - 1}\x00"
+
+    text = re.sub(r"`([^`\n]+)`", stash_code, text)
+    text = html.escape(text)
+    text = re.sub(r"\*\*([^*\n]+?)\*\*", r"<strong>\1</strong>", text)
+    text = re.sub(r"__([^_\n]+?)__", r"<strong>\1</strong>", text)
+    text = re.sub(r"(?<!\*)\*(?!\s)([^*\n]+?)(?<!\s)\*(?!\*)", r"<em>\1</em>", text)
+    text = re.sub(r"(?<![_\w])_(?!\s)([^_\n]+?)(?<!\s)_(?![_\w])", r"<em>\1</em>", text)
+    text = re.sub(
+        r"\[([^\]\n]+)\]\(([^)\s]+)\)",
+        lambda m: f'<a href="{m.group(2)}" rel="noopener">{m.group(1)}</a>',
+        text,
+    )
+    text = re.sub(
+        r"\x00CODE(\d+)\x00",
+        lambda m: f"<code>{code_spans[int(m.group(1))]}</code>",
+        text,
+    )
+    return text
+
+
+def render_text_html(text: str) -> str:
+    return render_markdown(text)
 
 
 def page_filename(page_num: int) -> str:
@@ -1695,6 +1803,41 @@ main { max-width: 1680px; margin: 0 auto; padding: 16px; }
   font-size: 0.8rem;
   line-height: 1.45;
 }
+.event-body p { margin: 0 0 8px; }
+.event-body p:last-child { margin-bottom: 0; }
+.event-body ul, .event-body ol { margin: 0 0 8px; padding-left: 22px; }
+.event-body li { margin-bottom: 3px; }
+.event-body li:last-child { margin-bottom: 0; }
+.event-body code {
+  background: #ececec;
+  color: inherit;
+  padding: 1px 6px;
+  border-radius: 5px;
+  font-size: 0.88em;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.event-body pre code {
+  background: transparent;
+  color: inherit;
+  padding: 0;
+  border-radius: 0;
+  font-size: inherit;
+}
+.event-body h1, .event-body h2, .event-body h3,
+.event-body h4, .event-body h5, .event-body h6 {
+  margin: 4px 0 6px;
+  font-size: 1rem;
+  line-height: 1.3;
+}
+.event-body h1 { font-size: 1.15rem; }
+.event-body h2 { font-size: 1.08rem; }
+.event-body blockquote {
+  margin: 0 0 8px;
+  padding: 4px 10px;
+  border-left: 3px solid var(--line);
+  color: var(--muted);
+}
+.event-body a { color: var(--user-border); }
 .detail-collapsed {
   box-shadow: none;
 }
@@ -1938,7 +2081,7 @@ function renderEventCard(event) {
   const expanded = isCore || state.expandDetails;
   const body = preKinds.has(event.kind)
     ? `<pre>${escapeHtml(event.body)}</pre>`
-    : escapeHtml(event.body);
+    : (event.body_html || escapeHtml(event.body));
   const classes = [
     "event-card",
     isCore ? "core-event" : "detail-event",
@@ -2148,6 +2291,35 @@ h1 { margin: 0; font-size: 1.55rem; }
   overflow-wrap: anywhere;
 }
 .index-item-content p:last-child { margin-bottom: 0; }
+.index-item-content ul,
+.index-item-content ol { margin: 0 0 10px; padding-left: 22px; }
+.index-item-content li { margin-bottom: 3px; }
+.index-item-content code {
+  background: #ececec;
+  color: inherit;
+  padding: 1px 6px;
+  border-radius: 5px;
+  font-size: 0.9em;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.index-item-content pre {
+  margin: 0 0 10px;
+  padding: 10px;
+  background: rgba(0,0,0,0.06);
+  border-radius: 6px;
+  overflow-x: auto;
+  white-space: pre-wrap;
+}
+.index-item-content pre code {
+  background: transparent;
+  padding: 0;
+}
+.index-item-content h1, .index-item-content h2, .index-item-content h3,
+.index-item-content h4, .index-item-content h5, .index-item-content h6 {
+  margin: 4px 0 6px;
+  font-size: 1rem;
+}
+.index-item-content a { color: var(--user-border); }
 .index-item-response {
   margin-top: 12px;
   padding: 12px;
