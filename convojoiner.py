@@ -1784,7 +1784,7 @@ main { max-width: 1680px; margin: 0 auto; padding: 16px; }
   cursor: pointer;
   border: 1px solid var(--line);
   border-radius: 8px;
-  padding: 8px;
+  padding: 8px 26px 8px 8px;
   min-height: 70px;
   text-align: left;
   font: inherit;
@@ -1795,7 +1795,6 @@ main { max-width: 1680px; margin: 0 auto; padding: 16px; }
 .lane-header:focus-visible { outline: 2px solid var(--user-border); outline-offset: 1px; }
 .lane-header.claude { border-top: 4px solid var(--claude); }
 .lane-header.codex { border-top: 4px solid var(--codex); }
-.lane-header { position: relative; padding-right: 26px; }
 .lane-header .lane-toggle-icon {
   position: absolute;
   top: 6px;
