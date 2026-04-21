@@ -1375,7 +1375,7 @@ def page_filename(page_num: int) -> str:
 
 def pagination_html(current_page: int, total_pages: int) -> str:
     pieces = ['<nav class="pagination" aria-label="Pagination">']
-    pieces.append('<a href="index.html" class="index-link">Index</a>')
+    pieces.append('<a href="index.html">Index</a>')
     if current_page > 1:
         pieces.append(f'<a href="{page_filename(current_page - 1)}">&larr; Prev</a>')
     else:
@@ -1538,13 +1538,12 @@ h1 a { color: inherit; text-decoration: none; }
   margin-bottom: 6px;
   text-transform: uppercase;
 }
-.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; align-content: flex-start; align-items: flex-start; }
 .control-group .chips {
-  max-height: 94px;
+  height: 141px;
   overflow-y: auto;
   padding-right: 2px;
 }
-#session-filter { max-height: 130px; }
 .chip {
   display: inline-flex;
   align-items: center;
@@ -1599,8 +1598,7 @@ main { max-width: 1680px; margin: 0 auto; padding: 16px; }
   border: 1px solid var(--user-border);
 }
 .pagination a:hover { background: var(--user-bg); }
-.pagination .current,
-.pagination .index-link {
+.pagination .current {
   background: var(--user-border);
   color: #fff;
 }
