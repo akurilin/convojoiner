@@ -38,6 +38,9 @@ INTERNAL_CODEX_PREFIXES = (
 )
 ISO_FILENAME_RE = re.compile(r"rollout-(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2})")
 EXIT_CODE_RE = re.compile(r"(?:Process exited with code|Exit code)\s+(-?\d+)")
+COMMIT_OUTPUT_RE = re.compile(r"\[[\w\-/]+ ([a-f0-9]{7,})\] (.+?)(?:\n|$)", re.I)
+DEFAULT_PROMPTS_PER_PAGE = 5
+ASSISTANT_INDEX_SUMMARY_CHARS = 900
 
 
 @dataclass
@@ -82,8 +85,14 @@ def parse_args() -> argparse.Namespace:
         "-o",
         "--output",
         type=Path,
-        default=Path("convojoiner.html"),
-        help="Output HTML file. Default: ./convojoiner.html",
+        default=Path("convojoiner"),
+        help="Output directory. Default: ./convojoiner",
+    )
+    parser.add_argument(
+        "--page-prompts",
+        type=int,
+        default=DEFAULT_PROMPTS_PER_PAGE,
+        help=f"User prompt turns per generated page. Default: {DEFAULT_PROMPTS_PER_PAGE}",
     )
     parser.add_argument(
         "--since",
@@ -1086,11 +1095,316 @@ def isoformat_z(value: datetime | None) -> str:
     return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def write_html(output: Path, data: dict[str, Any]) -> None:
-    output.parent.mkdir(parents=True, exist_ok=True)
+def resolve_output_dir(output: Path) -> Path:
+    output = output.expanduser()
+    if output.suffix.lower() in {".html", ".htm"}:
+        return output.with_suffix("")
+    return output
+
+
+def write_html_archive(output: Path, data: dict[str, Any], prompts_per_page: int) -> Path:
+    if prompts_per_page < 1:
+        raise SystemExit("--page-prompts must be at least 1")
+
+    output_dir = resolve_output_dir(output)
+    if output_dir.exists() and not output_dir.is_dir():
+        raise SystemExit(f"Output path exists and is not a directory: {output_dir}")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    for old_page in output_dir.glob("page-*.html"):
+        old_page.unlink()
+
+    turns = build_turns(data["events"])
+    if data["events"] and not turns:
+        turns = [synthetic_turn(data["events"])]
+
+    total_pages = max(1, (len(turns) + prompts_per_page - 1) // prompts_per_page)
+    session_by_id = {session["id"]: session for session in data["sessions"]}
+    for page_num in range(1, total_pages + 1):
+        start = (page_num - 1) * prompts_per_page
+        end = start + prompts_per_page
+        page_turns = turns[start:end]
+        page_events = sorted(
+            [event for turn in page_turns for event in turn["events"]],
+            key=lambda event: (event["timestamp"], event["provider"], event["session_id"]),
+        )
+        page_session_ids = {event["session_id"] for event in page_events}
+        page_data = {
+            **data,
+            "sessions": [
+                session for session in data["sessions"] if session["id"] in page_session_ids
+            ],
+            "events": page_events,
+            "page": page_num,
+            "total_pages": total_pages,
+            "total_events": len(data["events"]),
+        }
+        write_page_html(output_dir / page_filename(page_num), page_data)
+
+    index_data = build_index_data(data, turns, total_pages, prompts_per_page, session_by_id)
+    write_index_html(output_dir / "index.html", data, index_data, total_pages)
+    return output_dir
+
+
+def write_page_html(path: Path, data: dict[str, Any]) -> None:
     data_json = json.dumps(data, ensure_ascii=False).replace("</", "<\\/")
-    html_text = HTML_TEMPLATE.replace("__DATA_JSON__", data_json)
-    output.write_text(html_text, encoding="utf-8")
+    html_text = (
+        PAGE_TEMPLATE.replace("__DATA_JSON__", data_json)
+        .replace("__PAGE_TITLE__", f"Koda Timeline - page {data['page']}/{data['total_pages']}")
+        .replace("__PAGE_HEADING__", f"Koda Timeline - page {data['page']}/{data['total_pages']}")
+        .replace("__PAGINATION_HTML__", pagination_html(data["page"], data["total_pages"]))
+    )
+    path.write_text(html_text, encoding="utf-8")
+
+
+def write_index_html(
+    path: Path, data: dict[str, Any], index_data: dict[str, Any], total_pages: int
+) -> None:
+    html_text = (
+        INDEX_TEMPLATE.replace("__INDEX_ITEMS__", index_data["items_html"])
+        .replace("__PAGINATION_HTML__", index_pagination_html(total_pages))
+        .replace("__PROMPT_COUNT__", str(index_data["prompt_count"]))
+        .replace("__MESSAGE_COUNT__", str(index_data["message_count"]))
+        .replace("__TOOL_CALL_COUNT__", str(index_data["tool_call_count"]))
+        .replace("__COMMIT_COUNT__", str(index_data["commit_count"]))
+        .replace("__PAGE_COUNT__", str(total_pages))
+        .replace("__COPY_ROOT__", html.escape(data["copy_root"]))
+    )
+    path.write_text(html_text, encoding="utf-8")
+
+
+def build_turns(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    turns: list[dict[str, Any]] = []
+    events_by_session: dict[str, list[dict[str, Any]]] = {}
+    for event in sorted(events, key=lambda e: (e["timestamp"], e["provider"], e["session_id"])):
+        events_by_session.setdefault(event["session_id"], []).append(event)
+
+    for session_events in events_by_session.values():
+        current: dict[str, Any] | None = None
+        preamble: list[dict[str, Any]] = []
+        for event in session_events:
+            is_user_prompt = event["kind"] == "message" and event["role"] == "user"
+            if not is_user_prompt:
+                if current:
+                    current["events"].append(event)
+                else:
+                    preamble.append(event)
+                continue
+
+            if current:
+                turns.append(current)
+            turn = {
+                "timestamp": event["timestamp"],
+                "session_id": event["session_id"],
+                "prompt_event": event,
+                "prompt_text": event["body"],
+                "events": [*preamble, event],
+                "is_prompt": True,
+            }
+            preamble = []
+            current = turn
+
+        if current:
+            turns.append(current)
+        elif preamble:
+            turns.append(synthetic_turn(preamble))
+
+    return sorted(turns, key=lambda turn: (turn["timestamp"], turn["session_id"]))
+
+
+def synthetic_turn(events: list[dict[str, Any]]) -> dict[str, Any]:
+    first = events[0]
+    return {
+        "timestamp": first["timestamp"],
+        "session_id": first["session_id"],
+        "prompt_event": first,
+        "prompt_text": "Session activity",
+        "events": events,
+        "is_prompt": False,
+    }
+
+
+def build_index_data(
+    data: dict[str, Any],
+    turns: list[dict[str, Any]],
+    total_pages: int,
+    prompts_per_page: int,
+    session_by_id: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    timeline_items: list[tuple[str, int, str]] = []
+    prompt_count = 0
+    commit_count = 0
+    message_count = sum(
+        1
+        for event in data["events"]
+        if event["kind"] == "message" and event["role"] in {"user", "assistant"}
+    )
+    tool_call_count = sum(
+        1
+        for event in data["events"]
+        if event["kind"] in {"command", "tool_use", "file_edit"}
+    )
+
+    for turn_index, turn in enumerate(turns):
+        page_num = min(total_pages, (turn_index // prompts_per_page) + 1)
+        prompt_event = turn["prompt_event"]
+        session = session_by_id.get(turn["session_id"], {})
+        if turn.get("is_prompt"):
+            prompt_count += 1
+            item_html = render_index_turn(prompt_count, page_num, turn, session)
+            timeline_items.append((turn["timestamp"], prompt_count * 2, item_html))
+
+        for commit_hash, commit_title, commit_ts in extract_commits(turn["events"]):
+            commit_count += 1
+            timeline_items.append(
+                (
+                    commit_ts or prompt_event["timestamp"],
+                    prompt_count * 2 + 1,
+                    render_index_commit(commit_hash, commit_title, commit_ts or prompt_event["timestamp"]),
+                )
+            )
+
+    timeline_items.sort(key=lambda item: (item[0], item[1]))
+    return {
+        "prompt_count": prompt_count,
+        "message_count": message_count,
+        "tool_call_count": tool_call_count,
+        "commit_count": commit_count,
+        "items_html": "\n".join(item[2] for item in timeline_items),
+    }
+
+
+def render_index_turn(
+    prompt_number: int, page_num: int, turn: dict[str, Any], session: dict[str, Any]
+) -> str:
+    prompt_event = turn["prompt_event"]
+    link = f"{page_filename(page_num)}#{html.escape(prompt_event['id'])}"
+    provider = session.get("provider", prompt_event["provider"])
+    repo = session.get("repo", "")
+    session_label = session.get("label", prompt_event["session_id"])
+    final_assistant = final_assistant_text(turn["events"])
+    tool_stats = format_detail_stats(turn["events"])
+    stats_parts = [part for part in [tool_stats, f"{provider} · {session_label}", repo] if part]
+    stats_html = (
+        f'<div class="index-item-stats">{html.escape(" · ".join(stats_parts))}</div>'
+        if stats_parts
+        else ""
+    )
+    final_html = ""
+    if final_assistant:
+        final_html = (
+            '<div class="index-item-response">'
+            '<div class="index-item-response-label">Final response</div>'
+            f"{render_text_html(first_useful_summary(final_assistant, ASSISTANT_INDEX_SUMMARY_CHARS))}"
+            "</div>"
+        )
+    return f"""
+<article class="index-item {html.escape(provider)}">
+  <a href="{link}">
+    <div class="index-item-header">
+      <span class="index-item-number">#{prompt_number}</span>
+      <time datetime="{html.escape(prompt_event['timestamp'])}">{html.escape(prompt_event['display_time'])}</time>
+    </div>
+    <div class="index-item-content">{render_text_html(turn["prompt_text"])}{final_html}</div>
+  </a>
+  {stats_html}
+</article>""".strip()
+
+
+def render_index_commit(commit_hash: str, commit_title: str, timestamp: str) -> str:
+    return f"""
+<article class="index-commit">
+  <div class="index-commit-header">
+    <span class="index-commit-hash">{html.escape(commit_hash[:7])}</span>
+    <time datetime="{html.escape(timestamp)}">{html.escape(timestamp)}</time>
+  </div>
+  <div class="index-commit-msg">{html.escape(commit_title)}</div>
+</article>""".strip()
+
+
+def extract_commits(events: list[dict[str, Any]]) -> list[tuple[str, str, str]]:
+    commits: list[tuple[str, str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for event in events:
+        if event["kind"] not in {"tool_result", "status"}:
+            continue
+        for match in COMMIT_OUTPUT_RE.finditer(event.get("body") or ""):
+            commit_hash, title = match.group(1), match.group(2).strip()
+            key = (commit_hash, title)
+            if key in seen:
+                continue
+            seen.add(key)
+            commits.append((commit_hash, title, event["timestamp"]))
+    return commits
+
+
+def final_assistant_text(events: list[dict[str, Any]]) -> str:
+    for event in reversed(events):
+        if event["kind"] == "message" and event["role"] == "assistant" and event.get("body"):
+            return event["body"]
+    return ""
+
+
+def format_detail_stats(events: list[dict[str, Any]]) -> str:
+    labels = {
+        "command": "commands",
+        "tool_use": "tools",
+        "tool_result": "results",
+        "file_edit": "patches",
+        "thinking": "thinking",
+        "status": "status",
+    }
+    counts: dict[str, int] = {}
+    for event in events:
+        label = labels.get(event["kind"])
+        if not label:
+            continue
+        counts[label] = counts.get(label, 0) + 1
+    return " · ".join(f"{count} {label}" for label, count in sorted(counts.items()))
+
+
+def render_text_html(text: str) -> str:
+    paragraphs = [part.strip() for part in re.split(r"\n\s*\n", text or "") if part.strip()]
+    if not paragraphs:
+        return ""
+    return "".join(f"<p>{html.escape(paragraph)}</p>" for paragraph in paragraphs)
+
+
+def page_filename(page_num: int) -> str:
+    return f"page-{page_num:03d}.html"
+
+
+def pagination_html(current_page: int, total_pages: int) -> str:
+    pieces = ['<nav class="pagination" aria-label="Pagination">']
+    pieces.append('<a href="index.html" class="index-link">Index</a>')
+    if current_page > 1:
+        pieces.append(f'<a href="{page_filename(current_page - 1)}">&larr; Prev</a>')
+    else:
+        pieces.append('<span class="disabled">&larr; Prev</span>')
+    for page_num in range(1, total_pages + 1):
+        if page_num == current_page:
+            pieces.append(f'<span class="current">{page_num}</span>')
+        else:
+            pieces.append(f'<a href="{page_filename(page_num)}">{page_num}</a>')
+    if current_page < total_pages:
+        pieces.append(f'<a href="{page_filename(current_page + 1)}">Next &rarr;</a>')
+    else:
+        pieces.append('<span class="disabled">Next &rarr;</span>')
+    pieces.append("</nav>")
+    return "".join(pieces)
+
+
+def index_pagination_html(total_pages: int) -> str:
+    pieces = ['<nav class="pagination" aria-label="Pagination">']
+    pieces.append('<span class="current">Index</span>')
+    pieces.append('<span class="disabled">&larr; Prev</span>')
+    for page_num in range(1, total_pages + 1):
+        pieces.append(f'<a href="{page_filename(page_num)}">{page_num}</a>')
+    if total_pages:
+        pieces.append('<a href="page-001.html">Next &rarr;</a>')
+    else:
+        pieces.append('<span class="disabled">Next &rarr;</span>')
+    pieces.append("</nav>")
+    return "".join(pieces)
 
 
 def print_dry_run(candidates: list[SessionCandidate], display_tz: timezone) -> None:
@@ -1146,24 +1460,25 @@ def main() -> int:
         events = [event for event in events if event_with_repo_filter(event, repo_folders)]
 
     data = build_html_data(copied, events, copy_root, display_tz, args.timezone, repo_folders)
-    write_html(args.output, data)
+    output_dir = write_html_archive(args.output, data, args.page_prompts)
+    index_path = output_dir / "index.html"
 
     print(f"Copied source files under: {copy_root}")
     print(f"Sessions: {len(data['sessions'])}")
     print(f"Events: {len(data['events'])}")
-    print(f"Wrote: {args.output.resolve()}")
+    print(f"Wrote: {index_path.resolve()}")
 
     if args.open:
-        webbrowser.open(args.output.resolve().as_uri())
+        webbrowser.open(index_path.resolve().as_uri())
     return 0
 
 
-HTML_TEMPLATE = r"""<!doctype html>
+PAGE_TEMPLATE = r"""<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Convojoiner Timeline</title>
+<title>__PAGE_TITLE__</title>
 <link rel="icon" href="data:,">
 <style>
 :root {
@@ -1201,6 +1516,7 @@ body {
 }
 .topbar-inner { max-width: 1680px; margin: 0 auto; padding: 14px 16px; }
 h1 { font-size: 1.35rem; margin: 0 0 8px; }
+h1 a { color: inherit; text-decoration: none; }
 .summary { color: var(--muted); font-size: 0.9rem; }
 .controls {
   display: grid;
@@ -1263,30 +1579,41 @@ button:hover { background: #f0f3f6; }
 main { max-width: 1680px; margin: 0 auto; padding: 16px; }
 .session-title { font-weight: 700; font-size: 0.9rem; }
 .session-meta { color: var(--muted); font-size: 0.78rem; margin-top: 3px; }
-.pager {
+.pagination {
   display: flex;
-  align-items: center;
   justify-content: center;
   gap: 8px;
+  margin: 14px 0;
   flex-wrap: wrap;
-  margin: 12px 0;
 }
-.pager-info {
-  color: var(--muted);
-  font-size: 0.88rem;
-  min-width: 220px;
-  text-align: center;
+.pagination a,
+.pagination span {
+  padding: 5px 10px;
+  border-radius: 6px;
+  text-decoration: none;
+  font-size: 0.85rem;
 }
-.pager button:disabled {
+.pagination a {
+  background: var(--card);
+  color: var(--user-border);
+  border: 1px solid var(--user-border);
+}
+.pagination a:hover { background: var(--user-bg); }
+.pagination .current,
+.pagination .index-link {
+  background: var(--user-border);
+  color: #fff;
+}
+.pagination .disabled {
   color: var(--muted);
-  cursor: default;
-  opacity: 0.55;
+  border: 1px solid #ddd;
 }
 .timeline-scroll { overflow-x: auto; padding-bottom: 32px; }
 .lane-grid {
   display: grid;
   gap: 8px;
   align-items: start;
+  min-width: min-content;
 }
 .lane-header, .time-cell { background: var(--bg); }
 .lane-header {
@@ -1404,21 +1731,12 @@ main { max-width: 1680px; margin: 0 auto; padding: 16px; }
 <body>
 <div class="topbar">
   <div class="topbar-inner">
-    <h1>Convojoiner Timeline</h1>
+    <h1><a href="index.html">__PAGE_HEADING__</a></h1>
     <div class="summary" id="summary"></div>
     <div class="controls">
       <div class="control-group">
         <div class="control-title">Search</div>
         <input id="search-input" type="search" placeholder="Search transcript">
-      </div>
-      <div class="control-group">
-        <div class="control-title">Page Size</div>
-        <select id="page-size-select">
-          <option value="100">100 events</option>
-          <option value="250" selected>250 events</option>
-          <option value="500">500 events</option>
-          <option value="1000">1000 events</option>
-        </select>
       </div>
       <div class="control-group">
         <div class="control-title">Provider</div>
@@ -1444,16 +1762,19 @@ main { max-width: 1680px; margin: 0 auto; padding: 16px; }
         <div class="control-title">Display</div>
         <div class="chips">
           <label class="chip"><input type="checkbox" id="dense-toggle"><span>Dense</span></label>
+          <label class="chip"><input type="checkbox" id="expand-details-toggle"><span>Expand details</span></label>
         </div>
       </div>
     </div>
   </div>
 </div>
+__PAGINATION_HTML__
 <main id="app"></main>
+__PAGINATION_HTML__
 <script id="transcript-data" type="application/json">__DATA_JSON__</script>
 <script>
 const data = JSON.parse(document.getElementById("transcript-data").textContent);
-const state = { query: "", dense: false, page: 1, pageSize: 250 };
+const state = { query: "", dense: false, expandDetails: false };
 const sessionById = new Map(data.sessions.map(session => [session.id, session]));
 const DETAIL_GROUPS = [
   { id: "commands", label: "Commands" },
@@ -1506,7 +1827,6 @@ function makeCheckboxes(containerId, name, values, labeler = value => value) {
     </label>
   `).join("");
   container.querySelectorAll("input").forEach(input => input.addEventListener("change", () => {
-    state.page = 1;
     render();
   }));
 }
@@ -1527,17 +1847,15 @@ function initFilters() {
 
   document.getElementById("search-input").addEventListener("input", event => {
     state.query = event.target.value.toLowerCase().trim();
-    state.page = 1;
-    render();
-  });
-  document.getElementById("page-size-select").addEventListener("change", event => {
-    state.pageSize = Number(event.target.value);
-    state.page = 1;
     render();
   });
   document.getElementById("dense-toggle").addEventListener("change", event => {
     state.dense = event.target.checked;
     render();
+  });
+  document.getElementById("expand-details-toggle").addEventListener("change", event => {
+    state.expandDetails = event.target.checked;
+    applyDetailExpansion();
   });
 }
 
@@ -1574,67 +1892,24 @@ function filteredEvents() {
 function render() {
   document.body.classList.toggle("dense", state.dense);
   const events = filteredEvents();
-  const page = paginateEvents(events);
-  const activeSessionIds = unique(page.events.map(event => event.session_id));
+  const activeSessionIds = unique(events.map(event => event.session_id));
   const activeSessions = data.sessions.filter(session => activeSessionIds.includes(session.id));
   document.getElementById("summary").textContent =
-    `${events.length} matching events · ${activeSessions.length} sessions on this page · sources copied to ${data.copy_root}`;
+    `${events.length} events on page ${data.page} of ${data.total_pages} · ${activeSessions.length} sessions on this page · sources copied to ${data.copy_root}`;
   const app = document.getElementById("app");
   if (!events.length) {
     app.innerHTML = `<div class="empty">No events match the current filters.</div>`;
     return;
   }
-  app.innerHTML = renderPager(page) + renderLanes(activeSessions, page.events) + renderPager(page);
-  wirePaginationButtons();
+  app.innerHTML = renderLanes(activeSessions, events);
   wireExpandButtons();
-}
-
-function paginateEvents(events) {
-  const pageCount = Math.max(1, Math.ceil(events.length / state.pageSize));
-  state.page = Math.max(1, Math.min(state.page, pageCount));
-  const start = (state.page - 1) * state.pageSize;
-  const end = Math.min(start + state.pageSize, events.length);
-  return {
-    events: events.slice(start, end),
-    page: state.page,
-    pageCount,
-    start,
-    end,
-    total: events.length
-  };
-}
-
-function renderPager(page) {
-  return `
-    <nav class="pager" aria-label="Pagination">
-      <button type="button" data-page-action="first" ${page.page === 1 ? "disabled" : ""}>First</button>
-      <button type="button" data-page-action="prev" ${page.page === 1 ? "disabled" : ""}>Prev</button>
-      <div class="pager-info">Page ${page.page} of ${page.pageCount} · ${page.start + 1}-${page.end} of ${page.total}</div>
-      <button type="button" data-page-action="next" ${page.page === page.pageCount ? "disabled" : ""}>Next</button>
-      <button type="button" data-page-action="last" data-page-count="${page.pageCount}" ${page.page === page.pageCount ? "disabled" : ""}>Last</button>
-    </nav>
-  `;
-}
-
-function wirePaginationButtons() {
-  document.querySelectorAll("[data-page-action]").forEach(button => {
-    button.addEventListener("click", () => {
-      const action = button.dataset.pageAction;
-      if (action === "first") state.page = 1;
-      if (action === "prev") state.page -= 1;
-      if (action === "next") state.page += 1;
-      if (action === "last") state.page = Number(button.dataset.pageCount || state.page);
-      render();
-      window.scrollTo({ top: 0, behavior: "auto" });
-    });
-  });
 }
 
 function renderLanes(sessions, events) {
   if (!sessions.length) {
     return `<div class="empty">No sessions have events on this page.</div>`;
   }
-  const columns = `112px repeat(${sessions.length}, minmax(280px, 420px))`;
+  const columns = `112px repeat(${sessions.length}, minmax(min(100%, 320px), 800px))`;
   const byMinute = new Map();
   events.forEach(event => {
     if (!byMinute.has(event.display_minute)) byMinute.set(event.display_minute, []);
@@ -1662,20 +1937,21 @@ function renderEventCard(event) {
   const preKinds = new Set(["command", "tool_use", "tool_result", "file_edit", "status"]);
   const isCore = isCoreEvent(event);
   const detailGroup = detailGroupForEvent(event);
+  const expanded = isCore || state.expandDetails;
   const body = preKinds.has(event.kind)
     ? `<pre>${escapeHtml(event.body)}</pre>`
     : escapeHtml(event.body);
   const classes = [
     "event-card",
     isCore ? "core-event" : "detail-event",
-    isCore ? "detail-expanded" : "detail-collapsed",
+    expanded ? "detail-expanded" : "detail-collapsed",
     `detail-${detailGroup}`,
     event.role,
     event.kind,
     event.provider,
     event.is_error ? "error" : ""
   ].join(" ");
-  const detailsToggle = isCore ? "" : `<button class="expand" type="button" aria-expanded="false">Show details</button>`;
+  const detailsToggle = isCore ? "" : `<button class="expand" type="button" aria-expanded="${expanded ? "true" : "false"}">${expanded ? "Hide details" : "Show details"}</button>`;
   return `
     <article class="${classes}" id="${escapeHtml(event.id)}">
       <div class="event-head">
@@ -1685,34 +1961,266 @@ function renderEventCard(event) {
           ${detailsToggle}
         </div>
       </div>
-      <div class="event-body"${isCore ? "" : " hidden"}>${body}</div>
+      <div class="event-body"${expanded ? "" : " hidden"}>${body}</div>
     </article>
   `;
 }
 
+function setDetailCardExpanded(card, expanded) {
+  const body = card.querySelector(".event-body");
+  const button = card.querySelector(".expand");
+  if (!body || !button) return;
+  card.classList.toggle("detail-collapsed", !expanded);
+  card.classList.toggle("detail-expanded", expanded);
+  body.hidden = !expanded;
+  button.textContent = expanded ? "Hide details" : "Show details";
+  button.setAttribute("aria-expanded", expanded ? "true" : "false");
+}
+
+function applyDetailExpansion() {
+  document.querySelectorAll(".event-card.detail-event").forEach(card => {
+    setDetailCardExpanded(card, state.expandDetails);
+  });
+}
+
 function wireExpandButtons() {
   document.querySelectorAll(".event-card.detail-event").forEach(card => {
-    const body = card.querySelector(".event-body");
     const button = card.querySelector(".expand");
-    if (!body || !button) return;
-
-    const setExpanded = expanded => {
-      card.classList.toggle("detail-collapsed", !expanded);
-      card.classList.toggle("detail-expanded", expanded);
-      body.hidden = !expanded;
-      button.textContent = expanded ? "Hide details" : "Show details";
-      button.setAttribute("aria-expanded", expanded ? "true" : "false");
-    };
-
-    setExpanded(!card.classList.contains("detail-collapsed"));
+    if (!button) return;
+    setDetailCardExpanded(card, state.expandDetails);
     button.addEventListener("click", () => {
-      setExpanded(card.classList.contains("detail-collapsed"));
+      setDetailCardExpanded(card, card.classList.contains("detail-collapsed"));
     });
   });
 }
 
 initFilters();
 render();
+</script>
+</body>
+</html>
+"""
+
+
+INDEX_TEMPLATE = r"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Koda Timeline - Index</title>
+<link rel="icon" href="data:,">
+<style>
+:root {
+  --bg: #f5f5f5;
+  --card: #ffffff;
+  --text: #212121;
+  --muted: #6f7782;
+  --line: #d8dde4;
+  --user-bg: #e3f2fd;
+  --user-border: #1976d2;
+  --assistant-border: #8f98a3;
+  --commit-bg: #fff3e0;
+  --commit-border: #ff9800;
+  --claude: #b05a2a;
+  --codex: #1d6b6b;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  padding: 24px 16px;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  line-height: 1.5;
+}
+.container { max-width: 980px; margin: 0 auto; }
+.header-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  border-bottom: 2px solid var(--user-border);
+  padding-bottom: 10px;
+  margin-bottom: 24px;
+}
+h1 { margin: 0; font-size: 1.55rem; }
+.search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.search input {
+  width: min(360px, 70vw);
+  border: 1px solid #9aa4ae;
+  border-radius: 6px;
+  padding: 7px 10px;
+  background: #fff;
+  color: var(--text);
+  font: inherit;
+}
+.search button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 6px;
+  background: var(--user-border);
+  color: #fff;
+  padding: 8px 12px;
+  cursor: pointer;
+}
+.pagination {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  margin: 24px 0;
+  flex-wrap: wrap;
+}
+.pagination a,
+.pagination span {
+  padding: 7px 12px;
+  border-radius: 6px;
+  text-decoration: none;
+  font-size: 0.9rem;
+}
+.pagination a {
+  background: var(--card);
+  color: var(--user-border);
+  border: 1px solid var(--user-border);
+}
+.pagination a:hover { background: var(--user-bg); }
+.pagination .current {
+  background: var(--user-border);
+  color: #fff;
+}
+.pagination .disabled {
+  color: var(--muted);
+  border: 1px solid #ddd;
+}
+.stats {
+  color: var(--muted);
+  margin: 0 0 22px;
+  font-size: 1rem;
+}
+.copy-root {
+  color: var(--muted);
+  font-size: 0.78rem;
+  overflow-wrap: anywhere;
+  margin: -10px 0 20px;
+}
+.index-item,
+.index-commit {
+  margin-bottom: 14px;
+  overflow: hidden;
+  border-radius: 8px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+}
+.index-item {
+  background: var(--user-bg);
+  border-left: 4px solid var(--user-border);
+}
+.index-item.claude { border-left-color: var(--claude); }
+.index-item.codex { border-left-color: var(--codex); }
+.index-item a,
+.index-commit a {
+  display: block;
+  color: inherit;
+  text-decoration: none;
+}
+.index-item a:hover { background: rgba(25, 118, 210, 0.08); }
+.index-item-header,
+.index-commit-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 14px;
+  background: rgba(0,0,0,0.035);
+  font-size: 0.85rem;
+}
+.index-item-number {
+  color: var(--user-border);
+  font-weight: 700;
+}
+.index-item-content { padding: 14px; }
+.index-item-content p {
+  margin: 0 0 10px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.index-item-content p:last-child { margin-bottom: 0; }
+.index-item-response {
+  margin-top: 12px;
+  padding: 12px;
+  background: var(--card);
+  border-left: 3px solid var(--assistant-border);
+  border-radius: 6px;
+}
+.index-item-response-label {
+  margin-bottom: 6px;
+  color: var(--muted);
+  font-size: 0.74rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+.index-item-stats {
+  padding: 8px 14px 11px;
+  color: var(--muted);
+  border-top: 1px solid rgba(0,0,0,0.06);
+  font-size: 0.85rem;
+}
+.index-commit {
+  padding: 0;
+  background: var(--commit-bg);
+  border-left: 4px solid var(--commit-border);
+}
+.index-commit-hash {
+  color: #e65100;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-weight: 700;
+}
+.index-commit-msg {
+  padding: 10px 14px 12px;
+  color: #5d4037;
+}
+time { color: var(--muted); font-size: 0.82rem; text-align: right; }
+.hidden { display: none; }
+@media (max-width: 680px) {
+  body { padding: 12px 8px; }
+  .header-row { align-items: stretch; }
+  .search, .search input { width: 100%; }
+}
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="header-row">
+    <h1>Koda Timeline</h1>
+    <div class="search">
+      <input id="search-input" type="search" placeholder="Search..." aria-label="Search index">
+      <button id="search-button" type="button" aria-label="Search">
+        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"></circle><path d="m21 21-4.35-4.35"></path></svg>
+      </button>
+    </div>
+  </div>
+  __PAGINATION_HTML__
+  <p class="stats">__PROMPT_COUNT__ prompts &middot; __MESSAGE_COUNT__ messages &middot; __TOOL_CALL_COUNT__ tool calls &middot; __COMMIT_COUNT__ commits &middot; __PAGE_COUNT__ pages</p>
+  <p class="copy-root">Sources copied to __COPY_ROOT__</p>
+  <div id="index-items">__INDEX_ITEMS__</div>
+  __PAGINATION_HTML__
+</div>
+<script>
+const searchInput = document.getElementById("search-input");
+const searchButton = document.getElementById("search-button");
+function filterIndex() {
+  const query = searchInput.value.trim().toLowerCase();
+  document.querySelectorAll(".index-item, .index-commit").forEach(item => {
+    item.classList.toggle("hidden", query && !item.textContent.toLowerCase().includes(query));
+  });
+}
+searchInput.addEventListener("input", filterIndex);
+searchButton.addEventListener("click", filterIndex);
 </script>
 </body>
 </html>

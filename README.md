@@ -1,12 +1,12 @@
 # Convojoiner
 
-Convojoiner generates a single self-contained HTML page that joins local Claude Code
-and Codex session transcripts into one filterable timeline.
+Convojoiner generates a static HTML archive that joins local Claude Code and
+Codex session transcripts into one browseable timeline.
 
 The tool treats the original transcript stores as read-only. It discovers matching
 sessions from `~/.claude/projects` and `~/.codex/sessions`, copies the selected
 JSONL files into a fresh `/tmp/convojoiner-*` directory, parses the copies, and
-writes the HTML output from those copied files.
+writes the HTML archive from those copied files.
 
 ## Usage
 
@@ -18,7 +18,7 @@ python3 convojoiner.py \
   --timezone Europe/Rome \
   --repo-folder /Users/alex/code/koda \
   --repo-folder /Users/alex/code/koda2 \
-  --output ./convojoiner.html
+  --output ./convojoiner
 ```
 
 Preview what would be selected without copying or writing output:
@@ -46,19 +46,27 @@ python3 convojoiner.py --no-subagents
 
 ## Output
 
-The generated HTML uses a paginated lane timeline. Each visible page renders one
-column per session or subagent that has events on that page, grouped by minute so
-concurrent work stays visually separated without putting thousands of cards in
-the DOM at once.
+The generated archive contains:
+
+- `index.html`: an index page with prompt cards, deterministic final-response
+  excerpts, tool counts, commit cards extracted from git output, stats, search,
+  and links to every transcript page.
+- `page-001.html`, `page-002.html`, and so on: precomputed transcript pages,
+  each containing a fixed number of user prompt turns. Use `--page-prompts` to
+  change the default of 5 prompt turns per page.
+
+Each transcript page renders one column per session or subagent that has events
+on that page, grouped by minute so concurrent work stays visually separated
+without putting the full archive in one document.
 
 User and assistant messages render expanded by default and are not part of the
 detail hide/show filter. Technical details such as commands, results, patches,
 web calls, thinking, status, and other tools render as compact expandable rows
 and can be hidden by category.
 
-The page includes client-side filters for provider, day, repo folder, detail
-category, session, search text, and page size. It does not load external assets
-or make network requests.
+Transcript pages include client-side filters for provider, day, repo folder,
+detail category, session, and search text, scoped to that precomputed page. The
+archive does not load external assets or make network requests.
 
 ## Source Stores
 
