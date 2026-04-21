@@ -15,7 +15,7 @@ import webbrowser
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
@@ -41,6 +41,57 @@ EXIT_CODE_RE = re.compile(r"(?:Process exited with code|Exit code)\s+(-?\d+)")
 COMMIT_OUTPUT_RE = re.compile(r"\[[\w\-/]+ ([a-f0-9]{7,})\] (.+?)(?:\n|$)", re.I)
 DEFAULT_PROMPTS_PER_PAGE = 5
 ASSISTANT_INDEX_SUMMARY_CHARS = 900
+
+def _redact_db_password(match: re.Match[str]) -> str:
+    return f"{match.group(1)}[REDACTED:db-password]{match.group(3)}"
+
+
+SECRET_PATTERNS: list[tuple[str, re.Pattern[str], Callable[[re.Match[str]], str] | None]] = [
+    ("anthropic-key", re.compile(r"sk-ant-[A-Za-z0-9\-_]{90,}"), None),
+    ("openai-project-key", re.compile(r"sk-proj-[A-Za-z0-9\-_]{40,}"), None),
+    ("openai-key", re.compile(r"sk-[A-Za-z0-9]{48,}"), None),
+    ("github-token", re.compile(r"gh[pousr]_[A-Za-z0-9]{30,}"), None),
+    ("github-pat", re.compile(r"github_pat_[A-Za-z0-9_]{60,}"), None),
+    ("aws-access-key", re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"), None),
+    ("google-api-key", re.compile(r"\bAIza[0-9A-Za-z\-_]{35}\b"), None),
+    ("google-oauth-secret", re.compile(r"GOCSPX-[A-Za-z0-9_\-]{20,}"), None),
+    ("slack-token", re.compile(r"\bxox[bpars]-[A-Za-z0-9-]{10,}"), None),
+    ("stripe-live-key", re.compile(r"\b(?:sk|rk)_live_[A-Za-z0-9]{24,}\b"), None),
+    (
+        "pem-private-key",
+        re.compile(
+            r"-----BEGIN (?:RSA |DSA |EC |OPENSSH |PGP )?PRIVATE KEY-----"
+            r"[\s\S]*?"
+            r"-----END (?:RSA |DSA |EC |OPENSSH |PGP )?PRIVATE KEY-----"
+        ),
+        None,
+    ),
+    (
+        "db-password",
+        re.compile(
+            r"(\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?)://[^:@\s/]+:)"
+            r"([^@\s/]+)"
+            r"(@[^\s\"'<>`]+)"
+        ),
+        _redact_db_password,
+    ),
+]
+
+REDACTION_COUNTS: dict[str, int] = {}
+
+
+def redact_secrets(text: str) -> str:
+    if not text:
+        return text
+    for name, pattern, formatter in SECRET_PATTERNS:
+        def replace(match: re.Match[str], _name: str = name, _formatter=formatter) -> str:
+            REDACTION_COUNTS[_name] = REDACTION_COUNTS.get(_name, 0) + 1
+            if _formatter is not None:
+                return _formatter(match)
+            return f"[REDACTED:{_name}]"
+
+        text = pattern.sub(replace, text)
+    return text
 
 
 @dataclass
@@ -1043,19 +1094,19 @@ def build_html_data(
                 "repo": candidate.repo_label or repo_label_for(candidate.cwd, repo_folders),
                 "started_at": isoformat_z(candidate.started_at),
                 "ended_at": isoformat_z(candidate.ended_at),
-                "summary": candidate.summary,
+                "summary": redact_secrets(candidate.summary),
                 "is_subagent": candidate.is_subagent,
                 "parent_session_id": candidate.parent_session_id,
                 "agent_id": candidate.agent_id,
-                "description": candidate.description,
-                "source_path": str(candidate.source_path),
-                "copied_path": str(candidate.copied_path) if candidate.copied_path else "",
+                "description": redact_secrets(candidate.description),
             }
         )
 
     html_events = []
     for index, event in enumerate(events, start=1):
         local_dt = event.timestamp.astimezone(display_tz)
+        redacted_title = redact_secrets(event.title)
+        redacted_body = redact_secrets(event.body)
         html_events.append(
             {
                 "id": f"event-{index}",
@@ -1067,9 +1118,9 @@ def build_html_data(
                 "day": local_dt.strftime("%Y-%m-%d"),
                 "role": event.role,
                 "kind": event.kind,
-                "title": event.title,
-                "body": event.body,
-                "body_html": render_markdown(event.body) if event.kind in PROSE_KINDS else "",
+                "title": redacted_title,
+                "body": redacted_body,
+                "body_html": render_markdown(redacted_body) if event.kind in PROSE_KINDS else "",
                 "cwd": event.cwd,
                 "call_id": event.call_id,
                 "is_error": event.is_error,
@@ -1079,7 +1130,6 @@ def build_html_data(
     return {
         "generated_at": isoformat_z(datetime.now(timezone.utc)),
         "timezone": timezone_label,
-        "copy_root": str(copy_root),
         "repo_folders": repo_folders,
         "sessions": sessions,
         "events": html_events,
@@ -1164,7 +1214,6 @@ def write_index_html(
         .replace("__TOOL_CALL_COUNT__", str(index_data["tool_call_count"]))
         .replace("__COMMIT_COUNT__", str(index_data["commit_count"]))
         .replace("__PAGE_COUNT__", str(total_pages))
-        .replace("__COPY_ROOT__", html.escape(data["copy_root"]))
     )
     path.write_text(html_text, encoding="utf-8")
 
@@ -1570,6 +1619,10 @@ def main() -> int:
     print(f"Copied source files under: {copy_root}")
     print(f"Sessions: {len(data['sessions'])}")
     print(f"Events: {len(data['events'])}")
+    if REDACTION_COUNTS:
+        summary = ", ".join(f"{name}={count}" for name, count in sorted(REDACTION_COUNTS.items()))
+        total = sum(REDACTION_COUNTS.values())
+        print(f"Redacted {total} secret match(es): {summary}")
     print(f"Wrote: {index_path.resolve()}")
 
     if args.open:
@@ -2067,7 +2120,7 @@ function render() {
   const activeSessionIds = unique(events.map(event => event.session_id));
   const activeSessions = data.sessions.filter(session => activeSessionIds.includes(session.id));
   document.getElementById("summary").textContent =
-    `${events.length} events on page ${data.page} of ${data.total_pages} · ${activeSessions.length} sessions on this page · sources copied to ${data.copy_root}`;
+    `${events.length} events on page ${data.page} of ${data.total_pages} · ${activeSessions.length} sessions on this page`;
   const app = document.getElementById("app");
   if (!events.length) {
     app.innerHTML = `<div class="empty">No events match the current filters.</div>`;
@@ -2309,12 +2362,6 @@ h1 { margin: 0; font-size: 1.55rem; }
   margin: 0 0 22px;
   font-size: 1rem;
 }
-.copy-root {
-  color: var(--muted);
-  font-size: 0.78rem;
-  overflow-wrap: anywhere;
-  margin: -10px 0 20px;
-}
 .index-item,
 .index-commit {
   margin-bottom: 14px;
@@ -2441,7 +2488,6 @@ time { color: var(--muted); font-size: 0.82rem; text-align: right; }
   </div>
   __PAGINATION_HTML__
   <p class="stats">__PROMPT_COUNT__ prompts &middot; __MESSAGE_COUNT__ messages &middot; __TOOL_CALL_COUNT__ tool calls &middot; __COMMIT_COUNT__ commits &middot; __PAGE_COUNT__ pages</p>
-  <p class="copy-root">Sources copied to __COPY_ROOT__</p>
   <div id="index-items">__INDEX_ITEMS__</div>
   __PAGINATION_HTML__
 </div>
