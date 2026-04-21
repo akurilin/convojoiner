@@ -336,9 +336,8 @@ def scan_claude_session(path: Path, is_subagent: bool) -> SessionCandidate | Non
     if not cwd:
         cwd = decode_claude_project_folder(path)
 
-    label = f"Claude {short_id(session_id)}"
-    if is_subagent:
-        label = f"Claude agent {short_id(agent_id or path.stem)}"
+    label_id = agent_id or path.stem if is_subagent else session_id
+    label = f"Claude {short_id(label_id)}"
 
     description = ""
     meta_path = path.with_suffix(".meta.json")
@@ -346,9 +345,6 @@ def scan_claude_session(path: Path, is_subagent: bool) -> SessionCandidate | Non
         try:
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
             description = stringify_content(meta.get("description"))
-            agent_type = stringify_content(meta.get("agentType"))
-            if agent_type:
-                label = f"Claude {agent_type} {short_id(agent_id or path.stem)}"
         except (OSError, json.JSONDecodeError):
             pass
 
@@ -1714,22 +1710,64 @@ main { max-width: 1680px; margin: 0 auto; padding: 16px; }
   color: var(--muted);
   border: 1px solid #ddd;
 }
-.timeline-scroll { overflow-x: auto; padding-bottom: 32px; }
+.timeline-scroll { padding-bottom: 32px; overflow: visible; }
 .lane-grid {
   display: grid;
   gap: 8px;
   align-items: start;
   min-width: min-content;
 }
+.corner-cell {
+  position: sticky;
+  top: 0;
+  z-index: 6;
+  background: var(--bg);
+}
 .lane-header, .time-cell { background: var(--bg); }
 .lane-header {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  cursor: pointer;
   border: 1px solid var(--line);
   border-radius: 8px;
   padding: 8px;
   min-height: 70px;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  transition: background 0.12s ease;
 }
+.lane-header:hover { background: #eef2f6; }
+.lane-header:focus-visible { outline: 2px solid var(--user-border); outline-offset: 1px; }
 .lane-header.claude { border-top: 4px solid var(--claude); }
 .lane-header.codex { border-top: 4px solid var(--codex); }
+.lane-header { position: relative; padding-right: 26px; }
+.lane-header .lane-toggle-icon {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  color: var(--muted);
+  font-size: 1.05rem;
+  line-height: 1;
+}
+.lane-header:hover .lane-toggle-icon { color: var(--user-border); }
+.lane-header.collapsed {
+  padding: 6px 2px;
+  min-height: 52px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+.lane-header.collapsed .lane-toggle-icon {
+  position: static;
+  font-size: 1.1rem;
+}
+.lane-cell-collapsed {
+  min-height: 0;
+  border-top: none;
+}
 .time-cell {
   color: var(--muted);
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -1896,10 +1934,6 @@ main { max-width: 1680px; margin: 0 auto; padding: 16px; }
         <div class="chips" id="detail-filter"></div>
       </div>
       <div class="control-group">
-        <div class="control-title">Session</div>
-        <div class="chips" id="session-filter"></div>
-      </div>
-      <div class="control-group">
         <div class="control-title">Display</div>
         <div class="chips">
           <label class="chip"><input type="checkbox" id="dense-toggle"><span>Dense</span></label>
@@ -1915,7 +1949,7 @@ __PAGINATION_HTML__
 <script id="transcript-data" type="application/json">__DATA_JSON__</script>
 <script>
 const data = JSON.parse(document.getElementById("transcript-data").textContent);
-const state = { query: "", dense: false, expandDetails: false };
+const state = { query: "", dense: false, expandDetails: false, collapsedSessions: new Set() };
 const sessionById = new Map(data.sessions.map(session => [session.id, session]));
 const DETAIL_GROUPS = [
   { id: "commands", label: "Commands" },
@@ -1984,7 +2018,6 @@ function initFilters() {
     .map(group => group.id)
     .filter(id => data.events.some(event => detailGroupForEvent(event) === id));
   makeCheckboxes("detail-filter", "detail", detailGroups, value => detailGroupById.get(value)?.label || value);
-  makeCheckboxes("session-filter", "session", data.sessions.map(s => s.id), value => sessionById.get(value)?.label || value);
 
   document.getElementById("search-input").addEventListener("input", event => {
     state.query = event.target.value.toLowerCase().trim();
@@ -2005,7 +2038,6 @@ function filteredEvents() {
   const days = selectedValues("day");
   const repos = selectedValues("repo");
   const details = selectedValues("detail");
-  const sessions = selectedValues("session");
   return data.events.filter(event => {
     const session = sessionById.get(event.session_id);
     if (!session) return false;
@@ -2013,7 +2045,6 @@ function filteredEvents() {
     if (!days.has(event.day)) return false;
     if (!repos.has(session.repo)) return false;
     if (!isCoreEvent(event) && !details.has(detailGroupForEvent(event))) return false;
-    if (!sessions.has(event.session_id)) return false;
     if (state.query) {
       const haystack = [
         event.title,
@@ -2043,6 +2074,7 @@ function render() {
     return;
   }
   app.innerHTML = renderLanes(activeSessions, events);
+  wireLaneHeaders();
   wireExpandButtons();
 }
 
@@ -2050,28 +2082,61 @@ function renderLanes(sessions, events) {
   if (!sessions.length) {
     return `<div class="empty">No sessions have events on this page.</div>`;
   }
-  const columns = `112px repeat(${sessions.length}, minmax(min(100%, 320px), 800px))`;
+  const laneCols = sessions
+    .map(session => state.collapsedSessions.has(session.id) ? "28px" : "minmax(min(100%, 320px), 800px)")
+    .join(" ");
+  const columns = `112px ${laneCols}`;
   const byMinute = new Map();
   events.forEach(event => {
     if (!byMinute.has(event.display_minute)) byMinute.set(event.display_minute, []);
     byMinute.get(event.display_minute).push(event);
   });
   const minutes = Array.from(byMinute.keys()).sort();
-  const headers = `<div></div>${sessions.map(session => `
-    <div class="lane-header ${escapeHtml(session.provider)}">
-      <div class="session-title">${escapeHtml(session.label)}</div>
-      <div class="session-meta">${escapeHtml(session.cwd)}</div>
-    </div>
-  `).join("")}`;
+  const headers = `<div class="corner-cell"></div>${sessions.map(session => {
+    const collapsed = state.collapsedSessions.has(session.id);
+    const classes = `lane-header ${escapeHtml(session.provider)}${collapsed ? " collapsed" : ""}`;
+    const toggleIcon = collapsed
+      ? `<span class="lane-toggle-icon" aria-hidden="true">›</span>`
+      : `<span class="lane-toggle-icon" aria-hidden="true">‹</span>`;
+    const title = collapsed
+      ? toggleIcon
+      : `<div class="session-title">${escapeHtml(session.label)}</div>
+         <div class="session-meta">${escapeHtml(session.cwd)}</div>
+         ${toggleIcon}`;
+    const aria = collapsed ? "false" : "true";
+    return `
+    <button type="button" class="${classes}" data-session-id="${escapeHtml(session.id)}" aria-expanded="${aria}" title="${escapeHtml(session.label)}${collapsed ? " (click to expand)" : " (click to collapse)"}">
+      ${title}
+    </button>
+  `;
+  }).join("")}`;
   const rows = minutes.map(minute => {
     const minuteEvents = byMinute.get(minute);
     const cells = sessions.map(session => {
+      const collapsed = state.collapsedSessions.has(session.id);
+      if (collapsed) {
+        return `<div class="lane-cell lane-cell-collapsed"></div>`;
+      }
       const cellEvents = minuteEvents.filter(event => event.session_id === session.id);
       return `<div class="lane-cell">${cellEvents.map(renderEventCard).join("")}</div>`;
     }).join("");
     return `<div class="time-cell">${escapeHtml(minute)}</div>${cells}`;
   }).join("");
   return `<div class="timeline-scroll"><div class="lane-grid" style="grid-template-columns: ${columns}">${headers}${rows}</div></div>`;
+}
+
+function wireLaneHeaders() {
+  document.querySelectorAll(".lane-header[data-session-id]").forEach(header => {
+    header.addEventListener("click", () => {
+      const sessionId = header.dataset.sessionId;
+      if (state.collapsedSessions.has(sessionId)) {
+        state.collapsedSessions.delete(sessionId);
+      } else {
+        state.collapsedSessions.add(sessionId);
+      }
+      render();
+    });
+  });
 }
 
 function renderEventCard(event) {
