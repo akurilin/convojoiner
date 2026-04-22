@@ -57,6 +57,9 @@ SECRET_PATTERNS: list[tuple[str, re.Pattern[str], Callable[[re.Match[str]], str]
     ("google-oauth-secret", re.compile(r"GOCSPX-[A-Za-z0-9_\-]{20,}"), None),
     ("slack-token", re.compile(r"\bxox[bpars]-[A-Za-z0-9-]{10,}"), None),
     ("stripe-live-key", re.compile(r"\b(?:sk|rk)_live_[A-Za-z0-9]{24,}\b"), None),
+    ("supabase-secret", re.compile(r"\bsb_secret_[A-Za-z0-9_\-]{20,}"), None),
+    ("supabase-publishable", re.compile(r"\bsb_publishable_[A-Za-z0-9_\-]{20,}"), None),
+    ("supabase-access-token", re.compile(r"\bsbp_[A-Za-z0-9]{40,}"), None),
     (
         "pem-private-key",
         re.compile(
