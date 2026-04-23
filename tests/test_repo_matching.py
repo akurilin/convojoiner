@@ -24,9 +24,9 @@ class TestCwdMatchesPrefix:
     @pytest.mark.parametrize(
         "cwd",
         [
-            "/tmp/repository",   # letters continue the word
-            "/tmp/repo2",        # digit continues the word
-            "/tmp/repoXYZ",      # uppercase letter
+            "/tmp/repository",  # letters continue the word
+            "/tmp/repo2",  # digit continues the word
+            "/tmp/repoXYZ",  # uppercase letter
         ],
     )
     def test_word_continuation_is_rejected(self, cwd):
@@ -92,7 +92,4 @@ class TestRepoLabelFor:
 
     def test_folder_wins_over_prefix_when_both_match(self):
         """Strict folder match is evaluated first, so its label takes precedence."""
-        assert (
-            repo_label_for("/tmp/repo/sub", ["/tmp/repo/sub"], ["/tmp/repo"])
-            == "/tmp/repo/sub"
-        )
+        assert repo_label_for("/tmp/repo/sub", ["/tmp/repo/sub"], ["/tmp/repo"]) == "/tmp/repo/sub"
