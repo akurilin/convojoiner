@@ -8,6 +8,21 @@ sessions from `~/.claude/projects` and `~/.codex/sessions`, copies the selected
 JSONL files into a fresh `/tmp/convojoiner-*` directory, parses the copies, and
 writes the HTML archive from those copied files.
 
+## Prior art
+
+Inspired by Simon Willison's
+[simonw/claude-code-transcripts](https://github.com/simonw/claude-code-transcripts),
+which renders a single Claude Code session directory to HTML. Convojoiner extends
+that idea in a few directions:
+
+- **Multiple local folders** — scope the archive to one or more repo/worktree
+  paths with repeated `--repo-folder` flags.
+- **Multiple concurrent sessions** — concurrent Claude and Codex sessions are
+  laid out side-by-side in per-minute lanes rather than as a single linear log.
+- **Multiple providers** — both Claude Code and Codex are parsed out of the box,
+  with the goal of adding more coding-agent formats (OpenCode, Gemini, Amp,
+  Cursor, etc.) behind a common adapter.
+
 ## Usage
 
 Generate an HTML transcript for two worktrees since April 19, 2026:

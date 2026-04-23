@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${page_title}</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="static/styles.css">
+</head>
+<body>
+<div class="topbar">
+  <div class="topbar-inner">
+    <h1><a href="index.html">${page_heading}</a></h1>
+    <div class="summary" id="summary"></div>
+    <div class="controls">
+      <div class="control-group">
+        <div class="control-title">Search</div>
+        <input id="search-input" type="search" placeholder="Search transcript">
+      </div>
+      <div class="control-group">
+        <div class="control-title">Provider</div>
+        <div class="chips" id="provider-filter"></div>
+      </div>
+      <div class="control-group">
+        <div class="control-title">Day</div>
+        <div class="chips" id="day-filter"></div>
+      </div>
+      <div class="control-group">
+        <div class="control-title">Repo</div>
+        <div class="chips" id="repo-filter"></div>
+      </div>
+      <div class="control-group">
+        <div class="control-title">Details</div>
+        <div class="chips" id="detail-filter"></div>
+      </div>
+      <div class="control-group">
+        <div class="control-title">Display</div>
+        <div class="chips">
+          <label class="chip"><input type="checkbox" id="dense-toggle"><span>Dense</span></label>
+          <label class="chip"><input type="checkbox" id="expand-details-toggle"><span>Expand details</span></label>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+${pagination_html}
+<main id="app"></main>
+${pagination_html}
+<script id="transcript-data" type="application/json">${data_json}</script>
+<script src="static/page.js"></script>
+</body>
+</html>

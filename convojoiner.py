@@ -10,15 +10,20 @@ import os
 import re
 import shutil
 import tempfile
-import textwrap
 import webbrowser
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
+from string import Template
 from typing import Any, Callable
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+import markdown
 
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+TEMPLATES_DIR = SCRIPT_DIR / "templates"
+STATIC_DIR = SCRIPT_DIR / "static"
 DEFAULT_CLAUDE_SOURCE = Path.home() / ".claude" / "projects"
 DEFAULT_CODEX_SOURCE = Path.home() / ".codex" / "sessions"
 INTERNAL_CLAUDE_PREFIXES = (
@@ -1152,6 +1157,17 @@ def resolve_output_dir(output: Path) -> Path:
     return output
 
 
+def load_template(name: str) -> Template:
+    return Template((TEMPLATES_DIR / name).read_text(encoding="utf-8"))
+
+
+def copy_static_assets(output_dir: Path) -> None:
+    dest = output_dir / "static"
+    if dest.exists():
+        shutil.rmtree(dest)
+    shutil.copytree(STATIC_DIR, dest)
+
+
 def write_html_archive(output: Path, data: dict[str, Any], prompts_per_page: int) -> Path:
     if prompts_per_page < 1:
         raise SystemExit("--page-prompts must be at least 1")
@@ -1162,6 +1178,10 @@ def write_html_archive(output: Path, data: dict[str, Any], prompts_per_page: int
     output_dir.mkdir(parents=True, exist_ok=True)
     for old_page in output_dir.glob("page-*.html"):
         old_page.unlink()
+    copy_static_assets(output_dir)
+
+    page_template = load_template("page.html")
+    index_template = load_template("index.html")
 
     turns = build_turns(data["events"])
     if data["events"] and not turns:
@@ -1188,35 +1208,36 @@ def write_html_archive(output: Path, data: dict[str, Any], prompts_per_page: int
             "total_pages": total_pages,
             "total_events": len(data["events"]),
         }
-        write_page_html(output_dir / page_filename(page_num), page_data)
+        write_page_html(output_dir / page_filename(page_num), page_data, page_template)
 
     index_data = build_index_data(data, turns, total_pages, prompts_per_page, session_by_id)
-    write_index_html(output_dir / "index.html", data, index_data, total_pages)
+    write_index_html(output_dir / "index.html", index_data, total_pages, index_template)
     return output_dir
 
 
-def write_page_html(path: Path, data: dict[str, Any]) -> None:
+def write_page_html(path: Path, data: dict[str, Any], template: Template) -> None:
     data_json = json.dumps(data, ensure_ascii=False).replace("</", "<\\/")
-    html_text = (
-        PAGE_TEMPLATE.replace("__DATA_JSON__", data_json)
-        .replace("__PAGE_TITLE__", f"Koda Timeline - page {data['page']}/{data['total_pages']}")
-        .replace("__PAGE_HEADING__", f"Koda Timeline - page {data['page']}/{data['total_pages']}")
-        .replace("__PAGINATION_HTML__", pagination_html(data["page"], data["total_pages"]))
+    title = f"Koda Timeline - page {data['page']}/{data['total_pages']}"
+    html_text = template.substitute(
+        page_title=title,
+        page_heading=title,
+        pagination_html=pagination_html(data["page"], data["total_pages"]),
+        data_json=data_json,
     )
     path.write_text(html_text, encoding="utf-8")
 
 
 def write_index_html(
-    path: Path, data: dict[str, Any], index_data: dict[str, Any], total_pages: int
+    path: Path, index_data: dict[str, Any], total_pages: int, template: Template
 ) -> None:
-    html_text = (
-        INDEX_TEMPLATE.replace("__INDEX_ITEMS__", index_data["items_html"])
-        .replace("__PAGINATION_HTML__", index_pagination_html(total_pages))
-        .replace("__PROMPT_COUNT__", str(index_data["prompt_count"]))
-        .replace("__MESSAGE_COUNT__", str(index_data["message_count"]))
-        .replace("__TOOL_CALL_COUNT__", str(index_data["tool_call_count"]))
-        .replace("__COMMIT_COUNT__", str(index_data["commit_count"]))
-        .replace("__PAGE_COUNT__", str(total_pages))
+    html_text = template.substitute(
+        index_items=index_data["items_html"],
+        pagination_html=index_pagination_html(total_pages),
+        prompt_count=index_data["prompt_count"],
+        message_count=index_data["message_count"],
+        tool_call_count=index_data["tool_call_count"],
+        commit_count=index_data["commit_count"],
+        page_count=total_pages,
     )
     path.write_text(html_text, encoding="utf-8")
 
@@ -1343,7 +1364,7 @@ def render_index_turn(
         final_html = (
             '<div class="index-item-response">'
             '<div class="index-item-response-label">Final response</div>'
-            f"{render_text_html(first_useful_summary(final_assistant, ASSISTANT_INDEX_SUMMARY_CHARS))}"
+            f"{render_markdown(first_useful_summary(final_assistant, ASSISTANT_INDEX_SUMMARY_CHARS))}"
             "</div>"
         )
     return f"""
@@ -1353,7 +1374,7 @@ def render_index_turn(
       <span class="index-item-number">#{prompt_number}</span>
       <time datetime="{html.escape(prompt_event['timestamp'])}">{html.escape(prompt_event['display_time'])}</time>
     </div>
-    <div class="index-item-content">{render_text_html(turn["prompt_text"])}{final_html}</div>
+    <div class="index-item-content">{render_markdown(turn["prompt_text"])}{final_html}</div>
   </a>
   {stats_html}
 </article>""".strip()
@@ -1413,116 +1434,14 @@ def format_detail_stats(events: list[dict[str, Any]]) -> str:
 
 PROSE_KINDS = frozenset({"message", "thinking"})
 
+_MARKDOWN = markdown.Markdown(extensions=["fenced_code"], output_format="html")
+
 
 def render_markdown(text: str) -> str:
     if not text:
         return ""
-    lines = text.splitlines()
-    out: list[str] = []
-    i = 0
-    while i < len(lines):
-        line = lines[i]
-        fence = re.match(r"^```(\w*)\s*$", line)
-        if fence:
-            lang = fence.group(1)
-            i += 1
-            code_lines: list[str] = []
-            while i < len(lines) and not re.match(r"^```\s*$", lines[i]):
-                code_lines.append(lines[i])
-                i += 1
-            if i < len(lines):
-                i += 1
-            code_html = html.escape("\n".join(code_lines))
-            lang_attr = f' class="lang-{html.escape(lang)}"' if lang else ""
-            out.append(f"<pre><code{lang_attr}>{code_html}</code></pre>")
-            continue
-        heading = re.match(r"^(#{1,6})\s+(.+?)\s*#*\s*$", line)
-        if heading:
-            level = len(heading.group(1))
-            out.append(f"<h{level}>{render_inline_md(heading.group(2))}</h{level}>")
-            i += 1
-            continue
-        if line.startswith(">"):
-            quote_lines: list[str] = []
-            while i < len(lines) and lines[i].startswith(">"):
-                quote_lines.append(re.sub(r"^>\s?", "", lines[i]))
-                i += 1
-            quote_text = "\n".join(quote_lines).strip()
-            out.append(f"<blockquote><p>{render_inline_md(quote_text)}</p></blockquote>")
-            continue
-        if re.match(r"^\s*[-*+]\s+", line):
-            items: list[str] = []
-            while i < len(lines) and re.match(r"^\s*[-*+]\s+", lines[i]):
-                items.append(re.sub(r"^\s*[-*+]\s+", "", lines[i]))
-                i += 1
-            out.append(
-                "<ul>"
-                + "".join(f"<li>{render_inline_md(item)}</li>" for item in items)
-                + "</ul>"
-            )
-            continue
-        if re.match(r"^\s*\d+[.)]\s+", line):
-            items = []
-            while i < len(lines) and re.match(r"^\s*\d+[.)]\s+", lines[i]):
-                items.append(re.sub(r"^\s*\d+[.)]\s+", "", lines[i]))
-                i += 1
-            out.append(
-                "<ol>"
-                + "".join(f"<li>{render_inline_md(item)}</li>" for item in items)
-                + "</ol>"
-            )
-            continue
-        if not line.strip():
-            i += 1
-            continue
-        para_lines: list[str] = []
-        while i < len(lines) and lines[i].strip() and not _is_markdown_block_start(lines[i]):
-            para_lines.append(lines[i])
-            i += 1
-        out.append(f"<p>{render_inline_md(chr(10).join(para_lines))}</p>")
-    return "".join(out)
-
-
-def _is_markdown_block_start(line: str) -> bool:
-    return bool(
-        re.match(r"^```", line)
-        or re.match(r"^#{1,6}\s", line)
-        or line.startswith(">")
-        or re.match(r"^\s*[-*+]\s", line)
-        or re.match(r"^\s*\d+[.)]\s", line)
-    )
-
-
-def render_inline_md(text: str) -> str:
-    if not text:
-        return ""
-    code_spans: list[str] = []
-
-    def stash_code(match: re.Match[str]) -> str:
-        code_spans.append(html.escape(match.group(1)))
-        return f"\x00CODE{len(code_spans) - 1}\x00"
-
-    text = re.sub(r"`([^`\n]+)`", stash_code, text)
-    text = html.escape(text)
-    text = re.sub(r"\*\*([^*\n]+?)\*\*", r"<strong>\1</strong>", text)
-    text = re.sub(r"__([^_\n]+?)__", r"<strong>\1</strong>", text)
-    text = re.sub(r"(?<!\*)\*(?!\s)([^*\n]+?)(?<!\s)\*(?!\*)", r"<em>\1</em>", text)
-    text = re.sub(r"(?<![_\w])_(?!\s)([^_\n]+?)(?<!\s)_(?![_\w])", r"<em>\1</em>", text)
-    text = re.sub(
-        r"\[([^\]\n]+)\]\(([^)\s]+)\)",
-        lambda m: f'<a href="{m.group(2)}" rel="noopener">{m.group(1)}</a>',
-        text,
-    )
-    text = re.sub(
-        r"\x00CODE(\d+)\x00",
-        lambda m: f"<code>{code_spans[int(m.group(1))]}</code>",
-        text,
-    )
-    return text
-
-
-def render_text_html(text: str) -> str:
-    return render_markdown(text)
+    _MARKDOWN.reset()
+    return _MARKDOWN.convert(text)
 
 
 def page_filename(page_num: int) -> str:
@@ -1631,883 +1550,6 @@ def main() -> int:
     if args.open:
         webbrowser.open(index_path.resolve().as_uri())
     return 0
-
-
-PAGE_TEMPLATE = r"""<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>__PAGE_TITLE__</title>
-<link rel="icon" href="data:,">
-<style>
-:root {
-  --bg: #f5f5f5;
-  --card: #ffffff;
-  --text: #212121;
-  --muted: #6f7782;
-  --line: #d8dde4;
-  --user-bg: #e3f2fd;
-  --user-border: #1976d2;
-  --assistant-bg: #ffffff;
-  --assistant-border: #8f98a3;
-  --thinking-bg: #fff8e1;
-  --thinking-border: #f5b400;
-  --tool-bg: #f3e5f5;
-  --tool-border: #8e24aa;
-  --result-bg: #e8f5e9;
-  --error-bg: #ffebee;
-  --code-bg: #263238;
-  --code-text: #d7e8d0;
-  --claude: #b05a2a;
-  --codex: #1d6b6b;
-}
-* { box-sizing: border-box; }
-body {
-  margin: 0;
-  background: var(--bg);
-  color: var(--text);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  line-height: 1.45;
-}
-.topbar {
-  background: rgba(245, 245, 245, 0.96);
-  border-bottom: 1px solid var(--line);
-}
-.topbar-inner { max-width: 1680px; margin: 0 auto; padding: 14px 16px; }
-h1 { font-size: 1.35rem; margin: 0 0 8px; }
-h1 a { color: inherit; text-decoration: none; }
-.summary { color: var(--muted); font-size: 0.9rem; }
-.controls {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-  gap: 10px;
-  margin-top: 12px;
-}
-.control-group {
-  background: var(--card);
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 8px;
-}
-.control-title {
-  color: var(--muted);
-  font-size: 0.72rem;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  margin-bottom: 6px;
-  text-transform: uppercase;
-}
-.chips { display: flex; flex-wrap: wrap; gap: 6px; align-content: flex-start; align-items: flex-start; }
-.control-group .chips {
-  height: 141px;
-  overflow-y: auto;
-  padding-right: 2px;
-}
-.chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  padding: 3px 8px;
-  background: #fafafa;
-  font-size: 0.82rem;
-  max-width: 100%;
-}
-.chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-input[type="search"], select {
-  width: 100%;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  padding: 7px 9px;
-  background: #fff;
-  color: var(--text);
-  font: inherit;
-}
-button {
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: #fff;
-  color: var(--text);
-  cursor: pointer;
-  font: inherit;
-  padding: 6px 10px;
-}
-button:hover { background: #f0f3f6; }
-main { max-width: 1680px; margin: 0 auto; padding: 16px; }
-.session-title { font-weight: 700; font-size: 0.9rem; }
-.session-meta { color: var(--muted); font-size: 0.78rem; margin-top: 3px; }
-.pagination {
-  display: flex;
-  justify-content: center;
-  gap: 8px;
-  margin: 14px 0;
-  flex-wrap: wrap;
-}
-.pagination a,
-.pagination span {
-  padding: 5px 10px;
-  border-radius: 6px;
-  text-decoration: none;
-  font-size: 0.85rem;
-}
-.pagination a {
-  background: var(--card);
-  color: var(--user-border);
-  border: 1px solid var(--user-border);
-}
-.pagination a:hover { background: var(--user-bg); }
-.pagination .current {
-  background: var(--user-border);
-  color: #fff;
-}
-.pagination .disabled {
-  color: var(--muted);
-  border: 1px solid #ddd;
-}
-.timeline-scroll { padding-bottom: 32px; overflow: visible; }
-.lane-grid {
-  display: grid;
-  gap: 8px;
-  align-items: start;
-  min-width: min-content;
-}
-.corner-cell {
-  position: sticky;
-  top: 0;
-  z-index: 6;
-  background: var(--bg);
-}
-.lane-header, .time-cell { background: var(--bg); }
-.lane-header {
-  position: sticky;
-  top: 0;
-  z-index: 5;
-  cursor: pointer;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 8px 26px 8px 8px;
-  min-height: 70px;
-  text-align: left;
-  font: inherit;
-  color: inherit;
-  transition: background 0.12s ease;
-}
-.lane-header:hover { background: #eef2f6; }
-.lane-header:focus-visible { outline: 2px solid var(--user-border); outline-offset: 1px; }
-.lane-header.claude { border-top: 4px solid var(--claude); }
-.lane-header.codex { border-top: 4px solid var(--codex); }
-.lane-header .lane-toggle-icon {
-  position: absolute;
-  top: 6px;
-  right: 8px;
-  color: var(--muted);
-  font-size: 1.05rem;
-  line-height: 1;
-}
-.lane-header:hover .lane-toggle-icon { color: var(--user-border); }
-.lane-header.collapsed {
-  padding: 6px 2px;
-  min-height: 52px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  overflow: hidden;
-}
-.lane-header.collapsed .lane-toggle-icon {
-  position: static;
-  font-size: 1.1rem;
-}
-.lane-cell-collapsed {
-  min-height: 0;
-  border-top: none;
-}
-.time-cell {
-  color: var(--muted);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 0.78rem;
-  padding: 9px 4px;
-  text-align: right;
-}
-.lane-cell {
-  min-height: 28px;
-  border-top: 1px solid rgba(0, 0, 0, 0.04);
-}
-.event-card {
-  margin-bottom: 8px;
-  overflow: hidden;
-  border-radius: 8px;
-  border: 1px solid var(--line);
-  border-left: 4px solid var(--assistant-border);
-  background: var(--assistant-bg);
-  box-shadow: 0 1px 2px rgba(0,0,0,0.05);
-}
-.event-card.user { background: var(--user-bg); border-left-color: var(--user-border); }
-.event-card.assistant { border-left-color: var(--assistant-border); }
-.event-card.system { border-left-color: #607d8b; opacity: 0.88; }
-.event-card.tool_use, .event-card.command, .event-card.file_edit {
-  background: var(--tool-bg);
-  border-left-color: var(--tool-border);
-}
-.event-card.thinking { background: var(--thinking-bg); border-left-color: var(--thinking-border); }
-.event-card.tool_result { background: var(--result-bg); border-left-color: #43a047; }
-.event-card.error { background: var(--error-bg); border-left-color: #c62828; }
-.event-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  padding: 7px 10px;
-  background: rgba(0,0,0,0.035);
-  font-size: 0.78rem;
-}
-.event-title {
-  min-width: 0;
-  font-weight: 700;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.event-actions {
-  display: flex;
-  align-items: center;
-  flex: 0 0 auto;
-  gap: 6px;
-}
-.event-time {
-  color: var(--muted);
-  flex: 0 0 auto;
-  text-decoration: none;
-}
-.event-body {
-  padding: 10px;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-.event-body pre {
-  margin: 0;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  background: var(--code-bg);
-  color: var(--code-text);
-  border-radius: 6px;
-  padding: 10px;
-  font-size: 0.8rem;
-  line-height: 1.45;
-}
-.event-body p { margin: 0 0 8px; }
-.event-body p:last-child { margin-bottom: 0; }
-.event-body ul, .event-body ol { margin: 0 0 8px; padding-left: 22px; }
-.event-body li { margin-bottom: 3px; }
-.event-body li:last-child { margin-bottom: 0; }
-.event-body code {
-  background: #ececec;
-  color: inherit;
-  padding: 1px 6px;
-  border-radius: 5px;
-  font-size: 0.88em;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-}
-.event-body pre code {
-  background: transparent;
-  color: inherit;
-  padding: 0;
-  border-radius: 0;
-  font-size: inherit;
-}
-.event-body h1, .event-body h2, .event-body h3,
-.event-body h4, .event-body h5, .event-body h6 {
-  margin: 4px 0 6px;
-  font-size: 1rem;
-  line-height: 1.3;
-}
-.event-body h1 { font-size: 1.15rem; }
-.event-body h2 { font-size: 1.08rem; }
-.event-body blockquote {
-  margin: 0 0 8px;
-  padding: 4px 10px;
-  border-left: 3px solid var(--line);
-  color: var(--muted);
-}
-.event-body a { color: var(--user-border); }
-.detail-collapsed {
-  box-shadow: none;
-}
-.detail-collapsed .event-head {
-  padding-block: 5px;
-}
-.detail-collapsed .event-title {
-  font-weight: 600;
-}
-.expand {
-  flex: 0 0 auto;
-  padding: 2px 7px;
-  font-size: 0.72rem;
-  line-height: 1.25;
-}
-.dense .event-body { padding: 7px; font-size: 0.88rem; }
-.dense .event-head { padding: 5px 8px; }
-.empty {
-  padding: 24px;
-  border: 1px dashed var(--line);
-  border-radius: 8px;
-  background: var(--card);
-  color: var(--muted);
-}
-@media (max-width: 760px) {
-  .controls { grid-template-columns: 1fr; }
-  .lane-header, .time-cell { top: 0; position: static; }
-  main { padding: 10px; }
-}
-</style>
-</head>
-<body>
-<div class="topbar">
-  <div class="topbar-inner">
-    <h1><a href="index.html">__PAGE_HEADING__</a></h1>
-    <div class="summary" id="summary"></div>
-    <div class="controls">
-      <div class="control-group">
-        <div class="control-title">Search</div>
-        <input id="search-input" type="search" placeholder="Search transcript">
-      </div>
-      <div class="control-group">
-        <div class="control-title">Provider</div>
-        <div class="chips" id="provider-filter"></div>
-      </div>
-      <div class="control-group">
-        <div class="control-title">Day</div>
-        <div class="chips" id="day-filter"></div>
-      </div>
-      <div class="control-group">
-        <div class="control-title">Repo</div>
-        <div class="chips" id="repo-filter"></div>
-      </div>
-      <div class="control-group">
-        <div class="control-title">Details</div>
-        <div class="chips" id="detail-filter"></div>
-      </div>
-      <div class="control-group">
-        <div class="control-title">Display</div>
-        <div class="chips">
-          <label class="chip"><input type="checkbox" id="dense-toggle"><span>Dense</span></label>
-          <label class="chip"><input type="checkbox" id="expand-details-toggle"><span>Expand details</span></label>
-        </div>
-      </div>
-    </div>
-  </div>
-</div>
-__PAGINATION_HTML__
-<main id="app"></main>
-__PAGINATION_HTML__
-<script id="transcript-data" type="application/json">__DATA_JSON__</script>
-<script>
-const data = JSON.parse(document.getElementById("transcript-data").textContent);
-const state = { query: "", dense: false, expandDetails: false, collapsedSessions: new Set() };
-const sessionById = new Map(data.sessions.map(session => [session.id, session]));
-const DETAIL_GROUPS = [
-  { id: "commands", label: "Commands" },
-  { id: "results", label: "Results" },
-  { id: "patches", label: "Patches" },
-  { id: "web", label: "Web" },
-  { id: "thinking", label: "Thinking" },
-  { id: "status", label: "Status" },
-  { id: "tools", label: "Other tools" }
-];
-const detailGroupById = new Map(DETAIL_GROUPS.map(group => [group.id, group]));
-
-function unique(values) {
-  return Array.from(new Set(values.filter(Boolean))).sort();
-}
-
-function isCoreEvent(event) {
-  return event.kind === "message" && (event.role === "user" || event.role === "assistant");
-}
-
-function detailGroupForEvent(event) {
-  if (isCoreEvent(event)) return "core";
-  const title = String(event.title || "").toLowerCase();
-  if (event.kind === "command") return "commands";
-  if (event.kind === "file_edit") return "patches";
-  if (event.kind === "tool_result" && title.includes("web")) return "web";
-  if (event.kind === "tool_use" && title.includes("web")) return "web";
-  if (event.kind === "tool_result") return "results";
-  if (event.kind === "thinking") return "thinking";
-  if (event.kind === "status") return "status";
-  return "tools";
-}
-
-function escapeHtml(value) {
-  return String(value ?? "").replace(/[&<>"']/g, char => ({
-    "&": "&amp;",
-    "<": "&lt;",
-    ">": "&gt;",
-    '"': "&quot;",
-    "'": "&#39;"
-  }[char]));
-}
-
-function makeCheckboxes(containerId, name, values, labeler = value => value) {
-  const container = document.getElementById(containerId);
-  container.innerHTML = values.map(value => `
-    <label class="chip" title="${escapeHtml(value)}">
-      <input type="checkbox" name="${name}" value="${escapeHtml(value)}" checked>
-      <span>${escapeHtml(labeler(value))}</span>
-    </label>
-  `).join("");
-  container.querySelectorAll("input").forEach(input => input.addEventListener("change", () => {
-    render();
-  }));
-}
-
-function selectedValues(name) {
-  return new Set(Array.from(document.querySelectorAll(`input[name="${name}"]:checked`)).map(input => input.value));
-}
-
-function initFilters() {
-  makeCheckboxes("provider-filter", "provider", unique(data.sessions.map(s => s.provider)));
-  makeCheckboxes("day-filter", "day", unique(data.events.map(e => e.day)));
-  makeCheckboxes("repo-filter", "repo", unique(data.sessions.map(s => s.repo)), value => value.split("/").filter(Boolean).slice(-2).join("/") || value);
-  const detailGroups = DETAIL_GROUPS
-    .map(group => group.id)
-    .filter(id => data.events.some(event => detailGroupForEvent(event) === id));
-  makeCheckboxes("detail-filter", "detail", detailGroups, value => detailGroupById.get(value)?.label || value);
-
-  document.getElementById("search-input").addEventListener("input", event => {
-    state.query = event.target.value.toLowerCase().trim();
-    render();
-  });
-  document.getElementById("dense-toggle").addEventListener("change", event => {
-    state.dense = event.target.checked;
-    render();
-  });
-  document.getElementById("expand-details-toggle").addEventListener("change", event => {
-    state.expandDetails = event.target.checked;
-    applyDetailExpansion();
-  });
-}
-
-function filteredEvents() {
-  const providers = selectedValues("provider");
-  const days = selectedValues("day");
-  const repos = selectedValues("repo");
-  const details = selectedValues("detail");
-  return data.events.filter(event => {
-    const session = sessionById.get(event.session_id);
-    if (!session) return false;
-    if (!providers.has(event.provider)) return false;
-    if (!days.has(event.day)) return false;
-    if (!repos.has(session.repo)) return false;
-    if (!isCoreEvent(event) && !details.has(detailGroupForEvent(event))) return false;
-    if (state.query) {
-      const haystack = [
-        event.title,
-        event.body,
-        event.role,
-        event.kind,
-        session.label,
-        session.cwd,
-        session.repo
-      ].join("\n").toLowerCase();
-      if (!haystack.includes(state.query)) return false;
-    }
-    return true;
-  });
-}
-
-function render() {
-  document.body.classList.toggle("dense", state.dense);
-  const events = filteredEvents();
-  const activeSessionIds = unique(events.map(event => event.session_id));
-  const activeSessions = data.sessions.filter(session => activeSessionIds.includes(session.id));
-  document.getElementById("summary").textContent =
-    `${events.length} events on page ${data.page} of ${data.total_pages} · ${activeSessions.length} sessions on this page`;
-  const app = document.getElementById("app");
-  if (!events.length) {
-    app.innerHTML = `<div class="empty">No events match the current filters.</div>`;
-    return;
-  }
-  app.innerHTML = renderLanes(activeSessions, events);
-  wireLaneHeaders();
-  wireExpandButtons();
-}
-
-function renderLanes(sessions, events) {
-  if (!sessions.length) {
-    return `<div class="empty">No sessions have events on this page.</div>`;
-  }
-  const laneCols = sessions
-    .map(session => state.collapsedSessions.has(session.id) ? "28px" : "minmax(min(100%, 320px), 800px)")
-    .join(" ");
-  const columns = `112px ${laneCols}`;
-  const byMinute = new Map();
-  events.forEach(event => {
-    if (!byMinute.has(event.display_minute)) byMinute.set(event.display_minute, []);
-    byMinute.get(event.display_minute).push(event);
-  });
-  const minutes = Array.from(byMinute.keys()).sort();
-  const headers = `<div class="corner-cell"></div>${sessions.map(session => {
-    const collapsed = state.collapsedSessions.has(session.id);
-    const classes = `lane-header ${escapeHtml(session.provider)}${collapsed ? " collapsed" : ""}`;
-    const toggleIcon = collapsed
-      ? `<span class="lane-toggle-icon" aria-hidden="true">›</span>`
-      : `<span class="lane-toggle-icon" aria-hidden="true">‹</span>`;
-    const title = collapsed
-      ? toggleIcon
-      : `<div class="session-title">${escapeHtml(session.label)}</div>
-         <div class="session-meta">${escapeHtml(session.cwd)}</div>
-         ${toggleIcon}`;
-    const aria = collapsed ? "false" : "true";
-    return `
-    <button type="button" class="${classes}" data-session-id="${escapeHtml(session.id)}" aria-expanded="${aria}" title="${escapeHtml(session.label)}${collapsed ? " (click to expand)" : " (click to collapse)"}">
-      ${title}
-    </button>
-  `;
-  }).join("")}`;
-  const rows = minutes.map(minute => {
-    const minuteEvents = byMinute.get(minute);
-    const cells = sessions.map(session => {
-      const collapsed = state.collapsedSessions.has(session.id);
-      if (collapsed) {
-        return `<div class="lane-cell lane-cell-collapsed"></div>`;
-      }
-      const cellEvents = minuteEvents.filter(event => event.session_id === session.id);
-      return `<div class="lane-cell">${cellEvents.map(renderEventCard).join("")}</div>`;
-    }).join("");
-    return `<div class="time-cell">${escapeHtml(minute)}</div>${cells}`;
-  }).join("");
-  return `<div class="timeline-scroll"><div class="lane-grid" style="grid-template-columns: ${columns}">${headers}${rows}</div></div>`;
-}
-
-function wireLaneHeaders() {
-  document.querySelectorAll(".lane-header[data-session-id]").forEach(header => {
-    header.addEventListener("click", () => {
-      const sessionId = header.dataset.sessionId;
-      if (state.collapsedSessions.has(sessionId)) {
-        state.collapsedSessions.delete(sessionId);
-      } else {
-        state.collapsedSessions.add(sessionId);
-      }
-      render();
-    });
-  });
-}
-
-function renderEventCard(event) {
-  const preKinds = new Set(["command", "tool_use", "tool_result", "file_edit", "status"]);
-  const isCore = isCoreEvent(event);
-  const detailGroup = detailGroupForEvent(event);
-  const expanded = isCore || state.expandDetails;
-  const body = preKinds.has(event.kind)
-    ? `<pre>${escapeHtml(event.body)}</pre>`
-    : (event.body_html || escapeHtml(event.body));
-  const classes = [
-    "event-card",
-    isCore ? "core-event" : "detail-event",
-    expanded ? "detail-expanded" : "detail-collapsed",
-    `detail-${detailGroup}`,
-    event.role,
-    event.kind,
-    event.provider,
-    event.is_error ? "error" : ""
-  ].join(" ");
-  const detailsToggle = isCore ? "" : `<button class="expand" type="button" aria-expanded="${expanded ? "true" : "false"}">${expanded ? "Hide details" : "Show details"}</button>`;
-  return `
-    <article class="${classes}" id="${escapeHtml(event.id)}">
-      <div class="event-head">
-        <div class="event-title">${escapeHtml(event.title)}</div>
-        <div class="event-actions">
-          <a class="event-time" href="#${escapeHtml(event.id)}">${escapeHtml(event.display_time.split(" ")[1] || event.display_time)}</a>
-          ${detailsToggle}
-        </div>
-      </div>
-      <div class="event-body"${expanded ? "" : " hidden"}>${body}</div>
-    </article>
-  `;
-}
-
-function setDetailCardExpanded(card, expanded) {
-  const body = card.querySelector(".event-body");
-  const button = card.querySelector(".expand");
-  if (!body || !button) return;
-  card.classList.toggle("detail-collapsed", !expanded);
-  card.classList.toggle("detail-expanded", expanded);
-  body.hidden = !expanded;
-  button.textContent = expanded ? "Hide details" : "Show details";
-  button.setAttribute("aria-expanded", expanded ? "true" : "false");
-}
-
-function applyDetailExpansion() {
-  document.querySelectorAll(".event-card.detail-event").forEach(card => {
-    setDetailCardExpanded(card, state.expandDetails);
-  });
-}
-
-function wireExpandButtons() {
-  document.querySelectorAll(".event-card.detail-event").forEach(card => {
-    const button = card.querySelector(".expand");
-    if (!button) return;
-    setDetailCardExpanded(card, state.expandDetails);
-    button.addEventListener("click", () => {
-      setDetailCardExpanded(card, card.classList.contains("detail-collapsed"));
-    });
-  });
-}
-
-initFilters();
-render();
-</script>
-</body>
-</html>
-"""
-
-
-INDEX_TEMPLATE = r"""<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Koda Timeline - Index</title>
-<link rel="icon" href="data:,">
-<style>
-:root {
-  --bg: #f5f5f5;
-  --card: #ffffff;
-  --text: #212121;
-  --muted: #6f7782;
-  --line: #d8dde4;
-  --user-bg: #e3f2fd;
-  --user-border: #1976d2;
-  --assistant-border: #8f98a3;
-  --commit-bg: #fff3e0;
-  --commit-border: #ff9800;
-  --claude: #b05a2a;
-  --codex: #1d6b6b;
-}
-* { box-sizing: border-box; }
-body {
-  margin: 0;
-  padding: 24px 16px;
-  background: var(--bg);
-  color: var(--text);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  line-height: 1.5;
-}
-.container { max-width: 980px; margin: 0 auto; }
-.header-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 12px;
-  border-bottom: 2px solid var(--user-border);
-  padding-bottom: 10px;
-  margin-bottom: 24px;
-}
-h1 { margin: 0; font-size: 1.55rem; }
-.search {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.search input {
-  width: min(360px, 70vw);
-  border: 1px solid #9aa4ae;
-  border-radius: 6px;
-  padding: 7px 10px;
-  background: #fff;
-  color: var(--text);
-  font: inherit;
-}
-.search button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border: 0;
-  border-radius: 6px;
-  background: var(--user-border);
-  color: #fff;
-  padding: 8px 12px;
-  cursor: pointer;
-}
-.pagination {
-  display: flex;
-  justify-content: center;
-  gap: 8px;
-  margin: 24px 0;
-  flex-wrap: wrap;
-}
-.pagination a,
-.pagination span {
-  padding: 7px 12px;
-  border-radius: 6px;
-  text-decoration: none;
-  font-size: 0.9rem;
-}
-.pagination a {
-  background: var(--card);
-  color: var(--user-border);
-  border: 1px solid var(--user-border);
-}
-.pagination a:hover { background: var(--user-bg); }
-.pagination .current {
-  background: var(--user-border);
-  color: #fff;
-}
-.pagination .disabled {
-  color: var(--muted);
-  border: 1px solid #ddd;
-}
-.stats {
-  color: var(--muted);
-  margin: 0 0 22px;
-  font-size: 1rem;
-}
-.index-item,
-.index-commit {
-  margin-bottom: 14px;
-  overflow: hidden;
-  border-radius: 8px;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
-}
-.index-item {
-  background: var(--user-bg);
-  border-left: 4px solid var(--user-border);
-}
-.index-item.claude { border-left-color: var(--claude); }
-.index-item.codex { border-left-color: var(--codex); }
-.index-item a,
-.index-commit a {
-  display: block;
-  color: inherit;
-  text-decoration: none;
-}
-.index-item a:hover { background: rgba(25, 118, 210, 0.08); }
-.index-item-header,
-.index-commit-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 12px;
-  padding: 8px 14px;
-  background: rgba(0,0,0,0.035);
-  font-size: 0.85rem;
-}
-.index-item-number {
-  color: var(--user-border);
-  font-weight: 700;
-}
-.index-item-content { padding: 14px; }
-.index-item-content p {
-  margin: 0 0 10px;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-.index-item-content p:last-child { margin-bottom: 0; }
-.index-item-content ul,
-.index-item-content ol { margin: 0 0 10px; padding-left: 22px; }
-.index-item-content li { margin-bottom: 3px; }
-.index-item-content code {
-  background: #ececec;
-  color: inherit;
-  padding: 1px 6px;
-  border-radius: 5px;
-  font-size: 0.9em;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-}
-.index-item-content pre {
-  margin: 0 0 10px;
-  padding: 10px;
-  background: rgba(0,0,0,0.06);
-  border-radius: 6px;
-  overflow-x: auto;
-  white-space: pre-wrap;
-}
-.index-item-content pre code {
-  background: transparent;
-  padding: 0;
-}
-.index-item-content h1, .index-item-content h2, .index-item-content h3,
-.index-item-content h4, .index-item-content h5, .index-item-content h6 {
-  margin: 4px 0 6px;
-  font-size: 1rem;
-}
-.index-item-content a { color: var(--user-border); }
-.index-item-response {
-  margin-top: 12px;
-  padding: 12px;
-  background: var(--card);
-  border-left: 3px solid var(--assistant-border);
-  border-radius: 6px;
-}
-.index-item-response-label {
-  margin-bottom: 6px;
-  color: var(--muted);
-  font-size: 0.74rem;
-  font-weight: 700;
-  text-transform: uppercase;
-}
-.index-item-stats {
-  padding: 8px 14px 11px;
-  color: var(--muted);
-  border-top: 1px solid rgba(0,0,0,0.06);
-  font-size: 0.85rem;
-}
-.index-commit {
-  padding: 0;
-  background: var(--commit-bg);
-  border-left: 4px solid var(--commit-border);
-}
-.index-commit-hash {
-  color: #e65100;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-weight: 700;
-}
-.index-commit-msg {
-  padding: 10px 14px 12px;
-  color: #5d4037;
-}
-time { color: var(--muted); font-size: 0.82rem; text-align: right; }
-.hidden { display: none; }
-@media (max-width: 680px) {
-  body { padding: 12px 8px; }
-  .header-row { align-items: stretch; }
-  .search, .search input { width: 100%; }
-}
-</style>
-</head>
-<body>
-<div class="container">
-  <div class="header-row">
-    <h1>Koda Timeline</h1>
-    <div class="search">
-      <input id="search-input" type="search" placeholder="Search..." aria-label="Search index">
-      <button id="search-button" type="button" aria-label="Search">
-        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"></circle><path d="m21 21-4.35-4.35"></path></svg>
-      </button>
-    </div>
-  </div>
-  __PAGINATION_HTML__
-  <p class="stats">__PROMPT_COUNT__ prompts &middot; __MESSAGE_COUNT__ messages &middot; __TOOL_CALL_COUNT__ tool calls &middot; __COMMIT_COUNT__ commits &middot; __PAGE_COUNT__ pages</p>
-  <div id="index-items">__INDEX_ITEMS__</div>
-  __PAGINATION_HTML__
-</div>
-<script>
-const searchInput = document.getElementById("search-input");
-const searchButton = document.getElementById("search-button");
-function filterIndex() {
-  const query = searchInput.value.trim().toLowerCase();
-  document.querySelectorAll(".index-item, .index-commit").forEach(item => {
-    item.classList.toggle("hidden", query && !item.textContent.toLowerCase().includes(query));
-  });
-}
-searchInput.addEventListener("input", filterIndex);
-searchButton.addEventListener("click", filterIndex);
-</script>
-</body>
-</html>
-"""
 
 
 if __name__ == "__main__":
