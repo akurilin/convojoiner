@@ -1,5 +1,14 @@
 # Convojoiner
 
+[![CI](https://github.com/akurilin/convojoiner/actions/workflows/ci.yml/badge.svg)](https://github.com/akurilin/convojoiner/actions/workflows/ci.yml)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/akurilin/convojoiner)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python 3.12](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![Supports Claude Code](https://img.shields.io/badge/supports-Claude_Code-b05a2a?logo=anthropic&logoColor=white)](https://www.anthropic.com/claude-code)
+[![Supports Cline](https://img.shields.io/badge/supports-Cline-6b46c1?logo=visualstudiocode&logoColor=white)](https://github.com/cline/cline)
+[![Supports Codex](https://img.shields.io/badge/supports-Codex-1d6b6b?logo=openai&logoColor=white)](https://openai.com/codex)
+[![detect-secrets](https://img.shields.io/badge/redaction-detect--secrets-4B0082)](https://github.com/Yelp/detect-secrets)
+
 Convojoiner generates a static HTML archive that joins local coding-agent
 session transcripts from Claude Code, Cline, and Codex into one browseable
 timeline.
