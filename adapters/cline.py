@@ -21,7 +21,8 @@ extension auto-migrates on open but we support both names.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+import sys
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -35,15 +36,19 @@ from .base import (
 )
 
 
-DEFAULT_SOURCE = (
-    Path.home()
-    / "Library"
-    / "Application Support"
-    / "Code"
-    / "User"
-    / "globalStorage"
-    / "saoudrizwan.claude-dev"
-)
+def _default_source() -> Path:
+    """VS Code's globalStorage for the saoudrizwan.claude-dev extension, per-OS."""
+    home = Path.home()
+    ext_subpath = Path("Code") / "User" / "globalStorage" / "saoudrizwan.claude-dev"
+    if sys.platform == "darwin":
+        return home / "Library" / "Application Support" / ext_subpath
+    if sys.platform == "win32":
+        return home / "AppData" / "Roaming" / ext_subpath
+    # Linux and other Unix-likes use XDG config.
+    return home / ".config" / ext_subpath
+
+
+DEFAULT_SOURCE = _default_source()
 
 UI_FILENAMES = ("ui_messages.json", "claude_messages.json")
 
@@ -74,9 +79,7 @@ class ClineAdapter(SessionAdapter):
                 events.append(event)
         return events
 
-    def _message_to_event(
-        self, candidate: SessionCandidate, msg: dict[str, Any]
-    ) -> Event | None:
+    def _message_to_event(self, candidate: SessionCandidate, msg: dict[str, Any]) -> Event | None:
         timestamp = _epoch_ms_to_datetime(msg.get("ts"))
         if not timestamp:
             return None
@@ -95,29 +98,46 @@ class ClineAdapter(SessionAdapter):
         if msg_type == "say" and subtype in {"user_feedback", "task"}:
             if not text:
                 return None
-            return _event(self, candidate, timestamp,
-                          role="user", kind="message", title="User", body=text)
+            return _event(
+                self, candidate, timestamp, role="user", kind="message", title="User", body=text
+            )
 
         if (msg_type == "say" and subtype == "text") or (
             msg_type == "ask" and subtype == "followup"
         ):
             if not text:
                 return None
-            return _event(self, candidate, timestamp,
-                          role="assistant", kind="message", title="Assistant", body=text)
+            return _event(
+                self,
+                candidate,
+                timestamp,
+                role="assistant",
+                kind="message",
+                title="Assistant",
+                body=text,
+            )
 
         if msg_type == "say" and subtype == "reasoning":
             body = reasoning or text
             if not body:
                 return None
-            return _event(self, candidate, timestamp,
-                          role="assistant", kind="thinking", title="Thinking", body=body)
+            return _event(
+                self,
+                candidate,
+                timestamp,
+                role="assistant",
+                kind="thinking",
+                title="Thinking",
+                body=body,
+            )
 
         if subtype == "command":
             if not text:
                 return None
             return _event(
-                self, candidate, timestamp,
+                self,
+                candidate,
+                timestamp,
                 role="tool",
                 kind="command" if msg_type == "ask" else "tool_result",
                 title="Command" if msg_type == "ask" else "Command (approved)",
@@ -127,14 +147,23 @@ class ClineAdapter(SessionAdapter):
         if msg_type == "say" and subtype == "command_output":
             if not text:
                 return None
-            return _event(self, candidate, timestamp,
-                          role="tool", kind="tool_result", title="Command output", body=text)
+            return _event(
+                self,
+                candidate,
+                timestamp,
+                role="tool",
+                kind="tool_result",
+                title="Command output",
+                body=text,
+            )
 
         if subtype == "tool":
             if not text:
                 return None
             return _event(
-                self, candidate, timestamp,
+                self,
+                candidate,
+                timestamp,
                 role="tool",
                 kind="tool_use" if msg_type == "ask" else "tool_result",
                 title="Tool" if msg_type == "ask" else "Tool result",
@@ -146,22 +175,31 @@ class ClineAdapter(SessionAdapter):
         ):
             if not text:
                 return None
-            return _event(self, candidate, timestamp,
-                          role="system", kind="status", title="Error",
-                          body=text, is_error=True)
+            return _event(
+                self,
+                candidate,
+                timestamp,
+                role="system",
+                kind="status",
+                title="Error",
+                body=text,
+                is_error=True,
+            )
 
         if subtype in {"completion_result", "resume_task"}:
             if not text:
                 return None
             title = str(subtype).replace("_", " ").title()
-            return _event(self, candidate, timestamp,
-                          role="system", kind="status", title=title, body=text)
+            return _event(
+                self, candidate, timestamp, role="system", kind="status", title=title, body=text
+            )
 
         # Fallback for any ask/say we haven't explicitly mapped.
         if text:
             title = str(subtype or msg_type).replace("_", " ").title()
-            return _event(self, candidate, timestamp,
-                          role="system", kind="status", title=title, body=text)
+            return _event(
+                self, candidate, timestamp, role="system", kind="status", title=title, body=text
+            )
 
         return None
 
@@ -200,11 +238,7 @@ def _load_task_history(source: Path) -> dict[str, dict[str, Any]]:
         return {}
     if not isinstance(data, list):
         return {}
-    return {
-        str(item["id"]): item
-        for item in data
-        if isinstance(item, dict) and "id" in item
-    }
+    return {str(item["id"]): item for item in data if isinstance(item, dict) and "id" in item}
 
 
 def _iter_task_ui_files(source: Path) -> list[Path]:
@@ -223,16 +257,15 @@ def _iter_task_ui_files(source: Path) -> list[Path]:
     return results
 
 
-def _scan_task(
-    ui_path: Path, history: dict[str, dict[str, Any]]
-) -> SessionCandidate | None:
+def _scan_task(ui_path: Path, history: dict[str, dict[str, Any]]) -> SessionCandidate | None:
     task_id = ui_path.parent.name
     messages = _read_ui_messages(ui_path)
     if not messages:
         return None
 
-    timestamps = [_epoch_ms_to_datetime(m.get("ts")) for m in messages]
-    timestamps = [t for t in timestamps if t is not None]
+    timestamps: list[datetime] = [
+        ts for ts in (_epoch_ms_to_datetime(m.get("ts")) for m in messages) if ts is not None
+    ]
     if not timestamps:
         return None
 
@@ -276,6 +309,6 @@ def _epoch_ms_to_datetime(value: Any) -> datetime | None:
     if not isinstance(value, (int, float)):
         return None
     try:
-        return datetime.fromtimestamp(value / 1000, tz=timezone.utc)
+        return datetime.fromtimestamp(value / 1000, tz=UTC)
     except (ValueError, OSError, OverflowError):
         return None
