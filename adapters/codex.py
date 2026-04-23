@@ -294,7 +294,6 @@ def _scan_session(path: Path) -> SessionCandidate | None:
     return SessionCandidate(
         provider=CodexAdapter.name,
         source_path=path,
-        copied_path=None,
         session_id=session_id,
         lane_id=f"codex:{session_id}",
         label=f"Codex {short_id(session_id)}",

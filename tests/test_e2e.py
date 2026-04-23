@@ -38,7 +38,6 @@ CLAUDE_SECRET_FIXTURE = DATA_DIR / "claude_with_secret" / "projects"
 def run_cli(
     *,
     output: Path,
-    copy_root: Path,
     claude_source: Path,
     codex_source: Path,
     extra: list[str] | None = None,
@@ -49,7 +48,6 @@ def run_cli(
         "--claude-source", str(claude_source),
         "--codex-source", str(codex_source),
         "--output", str(output),
-        "--copy-root", str(copy_root),
         "--since", "2019-01-01",
     ]
     if extra:
@@ -60,7 +58,6 @@ def run_cli(
 def _common_paths(tmp_path: Path) -> dict[str, Path]:
     return {
         "output": tmp_path / "archive",
-        "copy_root": tmp_path / "copies",
         "missing_claude": tmp_path / "no-claude-here",
         "missing_codex": tmp_path / "no-codex-here",
     }
@@ -70,7 +67,6 @@ def test_claude_only_run(tmp_path: Path) -> None:
     p = _common_paths(tmp_path)
     result = run_cli(
         output=p["output"],
-        copy_root=p["copy_root"],
         claude_source=CLAUDE_FIXTURE,
         codex_source=p["missing_codex"],
         extra=["--provider", "claude"],
@@ -94,7 +90,6 @@ def test_codex_only_run(tmp_path: Path) -> None:
     p = _common_paths(tmp_path)
     result = run_cli(
         output=p["output"],
-        copy_root=p["copy_root"],
         claude_source=p["missing_claude"],
         codex_source=CODEX_FIXTURE,
         extra=["--provider", "codex"],
@@ -115,7 +110,6 @@ def test_both_providers_interleaved(tmp_path: Path) -> None:
     p = _common_paths(tmp_path)
     result = run_cli(
         output=p["output"],
-        copy_root=p["copy_root"],
         claude_source=CLAUDE_FIXTURE,
         codex_source=CODEX_FIXTURE,
     )
@@ -144,7 +138,6 @@ def test_redaction_applied_end_to_end(tmp_path: Path) -> None:
     p = _common_paths(tmp_path)
     result = run_cli(
         output=p["output"],
-        copy_root=p["copy_root"],
         claude_source=staged_source,
         codex_source=p["missing_codex"],
         extra=["--provider", "claude"],
@@ -174,7 +167,6 @@ def test_cli_rejects_invalid_inputs(
     p = _common_paths(tmp_path)
     result = run_cli(
         output=p["output"],
-        copy_root=p["copy_root"],
         claude_source=CLAUDE_FIXTURE,
         codex_source=p["missing_codex"],
         extra=["--provider", "claude", *cli_extra],

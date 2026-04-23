@@ -247,7 +247,6 @@ def _scan_session(path: Path, is_subagent: bool) -> SessionCandidate | None:
     return SessionCandidate(
         provider=ClaudeAdapter.name,
         source_path=path,
-        copied_path=None,
         session_id=session_id,
         lane_id=f"claude:{session_id}",
         label=label,
@@ -255,7 +254,6 @@ def _scan_session(path: Path, is_subagent: bool) -> SessionCandidate | None:
         started_at=started_at,
         ended_at=ended_at or started_at,
         summary=summary,
-        copied_extra_paths=[meta_path] if meta_path.exists() else [],
         extras={
             "is_subagent": is_subagent,
             "parent_session_id": parent_session_id,

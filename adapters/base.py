@@ -1,4 +1,12 @@
-"""Shared adapter base class, data contracts, and parsing helpers."""
+"""Shared adapter base class, data contracts, and parsing helpers.
+
+Invariant: source session files are strictly read-only. Adapters may only
+*read* from `SessionCandidate.source_path` and its sidecars. Never write,
+chmod, unlink, move, or otherwise mutate those paths — they are the user's
+authoritative conversation history and belong to the originating tool
+(Claude Code, Codex, etc.). If a future feature needs to transform content,
+copy to a scratch location first and operate on the copy. See CLAUDE.md.
+"""
 
 from __future__ import annotations
 
@@ -13,7 +21,6 @@ from typing import Any, ClassVar, Iterable
 class SessionCandidate:
     provider: str
     source_path: Path
-    copied_path: Path | None
     session_id: str
     lane_id: str
     label: str
@@ -22,7 +29,6 @@ class SessionCandidate:
     ended_at: datetime | None
     summary: str = ""
     repo_label: str = ""
-    copied_extra_paths: list[Path] = field(default_factory=list)
     extras: dict[str, Any] = field(default_factory=dict)
 
 
@@ -106,6 +112,8 @@ def default_format_tool_input(name: str, value: Any) -> str:
 
 
 def iter_jsonl(path: Path) -> Iterable[tuple[int, dict[str, Any]]]:
+    # Read-only by contract: `path` is a user-owned session file. See module
+    # docstring and CLAUDE.md.
     try:
         with path.open("r", encoding="utf-8") as fp:
             for line_number, line in enumerate(fp, start=1):

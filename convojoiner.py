@@ -4,13 +4,11 @@
 from __future__ import annotations
 
 import argparse
-import dataclasses
 import html
 import json
 import os
 import re
 import shutil
-import tempfile
 import webbrowser
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
@@ -89,11 +87,6 @@ def parse_args() -> argparse.Namespace:
             dest=f"{adapter.name}_source",
             help=f"{adapter.name.title()} source. Default: {adapter.default_source}",
         )
-    parser.add_argument(
-        "--copy-root",
-        type=Path,
-        help="Directory for read-only source copies. Default: fresh /tmp/convojoiner-* dir.",
-    )
     parser.add_argument(
         "--timezone",
         default="local",
@@ -225,59 +218,16 @@ def select_candidates(
     return selected
 
 
-def prepare_copy_root(copy_root: Path | None) -> Path:
-    if copy_root:
-        copy_root.mkdir(parents=True, exist_ok=True)
-        return copy_root
-    return Path(tempfile.mkdtemp(prefix="convojoiner-", dir="/tmp"))
-
-
-def copy_selected_sources(
-    candidates: list[SessionCandidate], copy_root: Path, sources: dict[str, Path]
-) -> list[SessionCandidate]:
-    copied_candidates: list[SessionCandidate] = []
-    for candidate in candidates:
-        base_source = sources[candidate.provider]
-        dest_path = copy_one_source(
-            candidate.source_path, copy_root, candidate.provider, base_source
-        )
-        copied_extras = [
-            copy_one_source(extra, copy_root, candidate.provider, base_source)
-            for extra in candidate.copied_extra_paths
-            if extra.exists()
-        ]
-        copied_candidates.append(
-            dataclasses.replace(
-                candidate, copied_path=dest_path, copied_extra_paths=copied_extras
-            )
-        )
-    return copied_candidates
-
-
-def copy_one_source(path: Path, copy_root: Path, provider: str, base_source: Path) -> Path:
-    try:
-        relative = path.relative_to(base_source)
-    except ValueError:
-        relative = Path(path.name)
-    dest = copy_root / "sources" / provider / relative
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    if dest.exists():
-        dest.chmod(dest.stat().st_mode | 0o200)
-        dest.unlink()
-    shutil.copy2(path, dest)
-    dest.chmod(dest.stat().st_mode & ~0o222)
-    return dest
-
-
 def parse_events_for_candidates(
     candidates: list[SessionCandidate], since: datetime | None, until: datetime | None
 ) -> list[Event]:
+    """Read (read-only!) the original source files for each candidate and
+    emit filtered events. See CLAUDE.md: we never mutate source_path."""
     events: list[Event] = []
     by_lane = {candidate.lane_id: candidate for candidate in candidates}
     for candidate in candidates:
         adapter = ADAPTERS[candidate.provider]
-        path = candidate.copied_path or candidate.source_path
-        parsed = adapter.parse_events(candidate, path)
+        parsed = adapter.parse_events(candidate, candidate.source_path)
         for event in parsed:
             if since and event.timestamp < since:
                 continue
@@ -293,7 +243,6 @@ def parse_events_for_candidates(
 def build_html_data(
     candidates: list[SessionCandidate],
     events: list[Event],
-    copy_root: Path,
     display_tz: timezone,
     timezone_label: str,
     repo_folders: list[str],
@@ -754,17 +703,14 @@ def main() -> int:
         print_dry_run(selected, display_tz)
         return 0
 
-    copy_root = prepare_copy_root(args.copy_root)
-    copied = copy_selected_sources(selected, copy_root, adapter_sources(args))
-    events = parse_events_for_candidates(copied, since, until)
+    events = parse_events_for_candidates(selected, since, until)
     if repo_folders:
         events = [event for event in events if cwd_matches_repo(event.cwd, repo_folders)]
 
-    data = build_html_data(copied, events, copy_root, display_tz, args.timezone, repo_folders)
+    data = build_html_data(selected, events, display_tz, args.timezone, repo_folders)
     output_dir = write_html_archive(args.output, data, args.page_prompts)
     index_path = output_dir / "index.html"
 
-    print(f"Copied source files under: {copy_root}")
     print(f"Sessions: {len(data['sessions'])}")
     print(f"Events: {len(data['events'])}")
     if REDACTION_COUNTS:
