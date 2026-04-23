@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Generate a self-contained HTML timeline from Claude Code and Codex sessions."""
+"""Generate a self-contained HTML timeline from multiple coding-agent sessions."""
 
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import html
 import json
 import os
@@ -11,7 +12,6 @@ import re
 import shutil
 import tempfile
 import webbrowser
-from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from string import Template
@@ -20,32 +20,22 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import markdown
 
+from adapters import (
+    ADAPTERS,
+    Event,
+    SessionCandidate,
+    first_useful_summary,
+)
+
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 TEMPLATES_DIR = SCRIPT_DIR / "templates"
 STATIC_DIR = SCRIPT_DIR / "static"
-DEFAULT_CLAUDE_SOURCE = Path.home() / ".claude" / "projects"
-DEFAULT_CODEX_SOURCE = Path.home() / ".codex" / "sessions"
-INTERNAL_CLAUDE_PREFIXES = (
-    "<local-command-caveat>",
-    "<command-name>",
-    "<system-reminder>",
-)
-INTERNAL_CODEX_PREFIXES = (
-    "<environment_context>",
-    "<permissions instructions>",
-    "<collaboration_mode>",
-    "<apps_instructions>",
-    "<skills_instructions>",
-    "<plugins_instructions>",
-    "# AGENTS.md instructions",
-    "<INSTRUCTIONS>",
-)
-ISO_FILENAME_RE = re.compile(r"rollout-(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2})")
-EXIT_CODE_RE = re.compile(r"(?:Process exited with code|Exit code)\s+(-?\d+)")
 COMMIT_OUTPUT_RE = re.compile(r"\[[\w\-/]+ ([a-f0-9]{7,})\] (.+?)(?:\n|$)", re.I)
 DEFAULT_PROMPTS_PER_PAGE = 5
 ASSISTANT_INDEX_SUMMARY_CHARS = 900
+PROSE_KINDS = frozenset({"message", "thinking"})
+
 
 def _redact_db_password(match: re.Match[str]) -> str:
     return f"{match.group(1)}[REDACTED:db-password]{match.group(3)}"
@@ -102,43 +92,11 @@ def redact_secrets(text: str) -> str:
     return text
 
 
-@dataclass
-class SessionCandidate:
-    provider: str
-    source_path: Path
-    copied_path: Path | None
-    session_id: str
-    lane_id: str
-    label: str
-    cwd: str
-    started_at: datetime | None
-    ended_at: datetime | None
-    summary: str = ""
-    is_subagent: bool = False
-    parent_session_id: str | None = None
-    agent_id: str | None = None
-    description: str = ""
-    repo_label: str = ""
-    copied_extra_paths: list[Path] = field(default_factory=list)
-
-
-@dataclass
-class Event:
-    session_id: str
-    provider: str
-    timestamp: datetime
-    role: str
-    kind: str
-    title: str
-    body: str
-    cwd: str
-    call_id: str | None = None
-    is_error: bool = False
-
-
 def parse_args() -> argparse.Namespace:
+    provider_names = tuple(ADAPTERS.keys())
+    provider_list = ", ".join(provider_names)
     parser = argparse.ArgumentParser(
-        description="Join Claude Code and Codex JSONL sessions into one HTML timeline."
+        description=f"Join coding-agent JSONL sessions ({provider_list}) into one HTML timeline."
     )
     parser.add_argument(
         "-o",
@@ -174,21 +132,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--provider",
         action="append",
-        choices=("claude", "codex"),
-        help="Provider to include. Repeatable. Default: both.",
+        choices=provider_names,
+        help="Provider to include. Repeatable. Default: all registered providers.",
     )
-    parser.add_argument(
-        "--claude-source",
-        type=Path,
-        default=DEFAULT_CLAUDE_SOURCE,
-        help=f"Claude Code projects source. Default: {DEFAULT_CLAUDE_SOURCE}",
-    )
-    parser.add_argument(
-        "--codex-source",
-        type=Path,
-        default=DEFAULT_CODEX_SOURCE,
-        help=f"Codex sessions source. Default: {DEFAULT_CODEX_SOURCE}",
-    )
+    for adapter in ADAPTERS.values():
+        parser.add_argument(
+            f"--{adapter.name}-source",
+            type=Path,
+            default=adapter.default_source,
+            dest=f"{adapter.name}_source",
+            help=f"{adapter.name.title()} source. Default: {adapter.default_source}",
+        )
     parser.add_argument(
         "--copy-root",
         type=Path,
@@ -242,277 +196,20 @@ def parse_cli_datetime(value: str | None, display_tz: timezone, is_until: bool) 
         raise SystemExit(f"Invalid datetime: {value}") from exc
 
 
-def parse_json_timestamp(value: Any) -> datetime | None:
-    if not isinstance(value, str) or not value:
-        return None
-    try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
+def adapter_sources(args: argparse.Namespace) -> dict[str, Path]:
+    return {
+        name: getattr(args, f"{name}_source").expanduser() for name in ADAPTERS
+    }
 
 
-def infer_time_from_codex_filename(path: Path) -> datetime | None:
-    match = ISO_FILENAME_RE.search(path.name)
-    if not match:
-        return None
-    try:
-        return datetime.strptime(match.group(1), "%Y-%m-%dT%H-%M-%S").replace(
-            tzinfo=timezone.utc
-        )
-    except ValueError:
-        return None
-
-
-def iter_jsonl(path: Path):
-    try:
-        with path.open("r", encoding="utf-8") as fp:
-            for line_number, line in enumerate(fp, start=1):
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    yield line_number, json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-    except OSError:
-        return
-
-
-def extract_content_text(content: Any) -> str:
-    if content is None:
-        return ""
-    if isinstance(content, str):
-        return content.strip()
-    if isinstance(content, list):
-        parts: list[str] = []
-        for block in content:
-            if not isinstance(block, dict):
-                continue
-            block_type = block.get("type")
-            if block_type in ("text", "input_text", "output_text"):
-                text = block.get("text")
-                if isinstance(text, str):
-                    parts.append(text)
-            elif block_type == "thinking":
-                thinking = block.get("thinking")
-                if isinstance(thinking, str):
-                    parts.append(thinking)
-            elif block_type == "tool_result":
-                result_text = stringify_content(block.get("content"))
-                if result_text:
-                    parts.append(result_text)
-        return "\n\n".join(part.strip() for part in parts if part and part.strip())
-    return stringify_content(content)
-
-
-def stringify_content(value: Any) -> str:
-    if value is None:
-        return ""
-    if isinstance(value, str):
-        return value.strip()
-    if isinstance(value, (dict, list)):
-        try:
-            return json.dumps(value, indent=2, ensure_ascii=False)
-        except TypeError:
-            return str(value)
-    return str(value)
-
-
-def is_internal_claude_text(text: str) -> bool:
-    stripped = text.strip()
-    return any(stripped.startswith(prefix) for prefix in INTERNAL_CLAUDE_PREFIXES)
-
-
-def is_internal_codex_text(text: str) -> bool:
-    stripped = text.strip()
-    return any(stripped.startswith(prefix) for prefix in INTERNAL_CODEX_PREFIXES)
-
-
-def first_useful_summary(text: str, max_chars: int = 180) -> str:
-    cleaned = " ".join(text.split())
-    if len(cleaned) <= max_chars:
-        return cleaned
-    return cleaned[: max_chars - 3].rstrip() + "..."
-
-
-def discover_claude_sessions(source: Path, include_subagents: bool) -> list[SessionCandidate]:
-    if not source.exists():
-        return []
+def discover_all(providers: set[str], args: argparse.Namespace) -> list[SessionCandidate]:
+    sources = adapter_sources(args)
     candidates: list[SessionCandidate] = []
-    for path in sorted(source.glob("**/*.jsonl")):
-        if "/subagents/" in str(path):
-            if not include_subagents:
-                continue
-            candidate = scan_claude_session(path, is_subagent=True)
-        else:
-            candidate = scan_claude_session(path, is_subagent=False)
-        if candidate:
-            candidates.append(candidate)
+    opts = {"include_subagents": not args.no_subagents}
+    for name in providers:
+        adapter = ADAPTERS[name]
+        candidates.extend(adapter.discover(sources[name], **opts))
     return candidates
-
-
-def scan_claude_session(path: Path, is_subagent: bool) -> SessionCandidate | None:
-    started_at: datetime | None = None
-    ended_at: datetime | None = None
-    cwd = ""
-    summary = ""
-    session_id = path.stem
-    parent_session_id = None
-    agent_id = None
-
-    if is_subagent:
-        agent_id = path.stem.removeprefix("agent-")
-        parent_session_id = path.parent.parent.name
-        session_id = f"{parent_session_id}/{path.stem}"
-
-    for _, obj in iter_jsonl(path):
-        timestamp = parse_json_timestamp(obj.get("timestamp"))
-        if timestamp:
-            started_at = min(started_at, timestamp) if started_at else timestamp
-            ended_at = max(ended_at, timestamp) if ended_at else timestamp
-
-        if not cwd and isinstance(obj.get("cwd"), str):
-            cwd = obj["cwd"]
-
-        if obj.get("sessionId") and not is_subagent:
-            session_id = str(obj["sessionId"])
-
-        if is_subagent and not agent_id and obj.get("agentId"):
-            agent_id = str(obj["agentId"])
-
-        if not summary and obj.get("type") == "user" and not obj.get("isMeta"):
-            content = obj.get("message", {}).get("content")
-            text = extract_content_text(content)
-            if text and not is_internal_claude_text(text):
-                summary = first_useful_summary(text)
-
-    if not started_at and not ended_at:
-        return None
-
-    if not cwd:
-        cwd = decode_claude_project_folder(path)
-
-    label_id = agent_id or path.stem if is_subagent else session_id
-    label = f"Claude {short_id(label_id)}"
-
-    description = ""
-    meta_path = path.with_suffix(".meta.json")
-    if meta_path.exists():
-        try:
-            meta = json.loads(meta_path.read_text(encoding="utf-8"))
-            description = stringify_content(meta.get("description"))
-        except (OSError, json.JSONDecodeError):
-            pass
-
-    return SessionCandidate(
-        provider="claude",
-        source_path=path,
-        copied_path=None,
-        session_id=session_id,
-        lane_id=f"claude:{session_id}",
-        label=label,
-        cwd=cwd,
-        started_at=started_at,
-        ended_at=ended_at or started_at,
-        summary=summary,
-        is_subagent=is_subagent,
-        parent_session_id=parent_session_id,
-        agent_id=agent_id,
-        description=description,
-        copied_extra_paths=[meta_path] if meta_path.exists() else [],
-    )
-
-
-def decode_claude_project_folder(path: Path) -> str:
-    for parent in path.parents:
-        if parent.parent.name == "projects":
-            name = parent.name
-            if name.startswith("-"):
-                return "/" + name[1:].replace("-", "/")
-            return name
-    return ""
-
-
-def discover_codex_sessions(source: Path) -> list[SessionCandidate]:
-    if not source.exists():
-        return []
-    candidates: list[SessionCandidate] = []
-    for path in sorted(source.glob("**/*.jsonl")):
-        candidate = scan_codex_session(path)
-        if candidate:
-            candidates.append(candidate)
-    return candidates
-
-
-def scan_codex_session(path: Path) -> SessionCandidate | None:
-    started_at: datetime | None = None
-    ended_at: datetime | None = None
-    cwd = ""
-    session_id = path.stem
-    summary = ""
-
-    inferred = infer_time_from_codex_filename(path)
-    if inferred:
-        started_at = inferred
-        ended_at = inferred
-
-    for _, obj in iter_jsonl(path):
-        timestamp = parse_json_timestamp(obj.get("timestamp"))
-        if timestamp:
-            started_at = min(started_at, timestamp) if started_at else timestamp
-            ended_at = max(ended_at, timestamp) if ended_at else timestamp
-
-        obj_type = obj.get("type")
-        payload = obj.get("payload") if isinstance(obj.get("payload"), dict) else {}
-        if obj_type == "session_meta":
-            if payload.get("id"):
-                session_id = str(payload["id"])
-            if not cwd and isinstance(payload.get("cwd"), str):
-                cwd = payload["cwd"]
-            meta_time = parse_json_timestamp(payload.get("timestamp"))
-            if meta_time:
-                started_at = min(started_at, meta_time) if started_at else meta_time
-                ended_at = max(ended_at, meta_time) if ended_at else meta_time
-
-        if not cwd and obj_type == "turn_context" and isinstance(payload.get("cwd"), str):
-            cwd = payload["cwd"]
-
-        if not summary and obj_type == "response_item":
-            if payload.get("type") == "message" and payload.get("role") == "user":
-                text = extract_content_text(payload.get("content"))
-                if text and not is_internal_codex_text(text):
-                    summary = first_useful_summary(text)
-
-        if not summary and obj_type == "event_msg" and payload.get("type") == "user_message":
-            text = stringify_content(payload.get("message"))
-            if text and not is_internal_codex_text(text):
-                summary = first_useful_summary(text)
-
-    if not started_at and not ended_at:
-        return None
-
-    return SessionCandidate(
-        provider="codex",
-        source_path=path,
-        copied_path=None,
-        session_id=session_id,
-        lane_id=f"codex:{session_id}",
-        label=f"Codex {short_id(session_id)}",
-        cwd=cwd,
-        started_at=started_at,
-        ended_at=ended_at or started_at,
-        summary=summary,
-    )
-
-
-def short_id(value: str | None) -> str:
-    if not value:
-        return "session"
-    value = value.split("/")[-1]
-    return value[:8]
 
 
 def session_overlaps_range(
@@ -590,20 +287,24 @@ def prepare_copy_root(copy_root: Path | None) -> Path:
 
 
 def copy_selected_sources(
-    candidates: list[SessionCandidate], copy_root: Path, claude_source: Path, codex_source: Path
+    candidates: list[SessionCandidate], copy_root: Path, sources: dict[str, Path]
 ) -> list[SessionCandidate]:
     copied_candidates: list[SessionCandidate] = []
     for candidate in candidates:
-        base_source = claude_source if candidate.provider == "claude" else codex_source
-        dest_path = copy_one_source(candidate.source_path, copy_root, candidate.provider, base_source)
-        copied = SessionCandidate(**{**candidate.__dict__, "copied_path": dest_path})
-        copied.copied_extra_paths = []
-        for extra_path in candidate.copied_extra_paths:
-            if extra_path.exists():
-                copied.copied_extra_paths.append(
-                    copy_one_source(extra_path, copy_root, candidate.provider, base_source)
-                )
-        copied_candidates.append(copied)
+        base_source = sources[candidate.provider]
+        dest_path = copy_one_source(
+            candidate.source_path, copy_root, candidate.provider, base_source
+        )
+        copied_extras = [
+            copy_one_source(extra, copy_root, candidate.provider, base_source)
+            for extra in candidate.copied_extra_paths
+            if extra.exists()
+        ]
+        copied_candidates.append(
+            dataclasses.replace(
+                candidate, copied_path=dest_path, copied_extra_paths=copied_extras
+            )
+        )
     return copied_candidates
 
 
@@ -628,11 +329,9 @@ def parse_events_for_candidates(
     events: list[Event] = []
     by_lane = {candidate.lane_id: candidate for candidate in candidates}
     for candidate in candidates:
+        adapter = ADAPTERS[candidate.provider]
         path = candidate.copied_path or candidate.source_path
-        if candidate.provider == "claude":
-            parsed = parse_claude_events(candidate, path)
-        else:
-            parsed = parse_codex_events(candidate, path)
+        parsed = adapter.parse_events(candidate, path)
         for event in parsed:
             if since and event.timestamp < since:
                 continue
@@ -643,438 +342,6 @@ def parse_events_for_candidates(
             events.append(event)
     events.sort(key=lambda event: (event.timestamp, event.provider, event.session_id))
     return events
-
-
-def parse_claude_events(candidate: SessionCandidate, path: Path) -> list[Event]:
-    events: list[Event] = []
-    for line_number, obj in iter_jsonl(path):
-        timestamp = parse_json_timestamp(obj.get("timestamp"))
-        if not timestamp:
-            continue
-        cwd = obj.get("cwd") if isinstance(obj.get("cwd"), str) else candidate.cwd
-        obj_type = obj.get("type")
-
-        if obj.get("isMeta") or obj_type in ("file-history-snapshot", "attachment"):
-            continue
-
-        message = obj.get("message") if isinstance(obj.get("message"), dict) else {}
-        content = message.get("content")
-
-        if obj_type == "system":
-            body = stringify_content(obj.get("content"))
-            if body:
-                events.append(
-                    Event(
-                        session_id=candidate.lane_id,
-                        provider="claude",
-                        timestamp=timestamp,
-                        role="system",
-                        kind="status",
-                        title=obj.get("subtype") or "System",
-                        body=body,
-                        cwd=cwd,
-                    )
-                )
-            continue
-
-        if isinstance(content, str):
-            if is_internal_claude_text(content):
-                continue
-            role = "user" if obj_type == "user" else "assistant"
-            events.append(
-                Event(
-                    session_id=candidate.lane_id,
-                    provider="claude",
-                    timestamp=timestamp,
-                    role=role,
-                    kind="message",
-                    title=role.title(),
-                    body=content,
-                    cwd=cwd,
-                )
-            )
-            continue
-
-        if not isinstance(content, list):
-            continue
-
-        for index, block in enumerate(content):
-            if not isinstance(block, dict):
-                continue
-            block_type = block.get("type")
-            event_time = timestamp + timedelta(microseconds=index)
-
-            if block_type == "text":
-                text = stringify_content(block.get("text"))
-                if not text or is_internal_claude_text(text):
-                    continue
-                role = "user" if obj_type == "user" else "assistant"
-                events.append(
-                    Event(
-                        session_id=candidate.lane_id,
-                        provider="claude",
-                        timestamp=event_time,
-                        role=role,
-                        kind="message",
-                        title=role.title(),
-                        body=text,
-                        cwd=cwd,
-                    )
-                )
-            elif block_type == "thinking":
-                thinking = stringify_content(block.get("thinking"))
-                if thinking:
-                    events.append(
-                        Event(
-                            session_id=candidate.lane_id,
-                            provider="claude",
-                            timestamp=event_time,
-                            role="assistant",
-                            kind="thinking",
-                            title="Thinking",
-                            body=thinking,
-                            cwd=cwd,
-                        )
-                    )
-            elif block_type == "tool_use":
-                name = stringify_content(block.get("name")) or "Tool"
-                tool_input = block.get("input")
-                events.append(
-                    Event(
-                        session_id=candidate.lane_id,
-                        provider="claude",
-                        timestamp=event_time,
-                        role="tool",
-                        kind=tool_kind(name),
-                        title=name,
-                        body=format_tool_input(name, tool_input),
-                        cwd=cwd,
-                        call_id=stringify_content(block.get("id")) or None,
-                    )
-                )
-            elif block_type == "tool_result":
-                body = stringify_content(block.get("content"))
-                if body:
-                    events.append(
-                        Event(
-                            session_id=candidate.lane_id,
-                            provider="claude",
-                            timestamp=event_time,
-                            role="tool",
-                            kind="tool_result",
-                            title="Tool result",
-                            body=body,
-                            cwd=cwd,
-                            call_id=stringify_content(block.get("tool_use_id")) or None,
-                            is_error=bool(block.get("is_error")),
-                        )
-                    )
-            elif block_type == "image":
-                events.append(
-                    Event(
-                        session_id=candidate.lane_id,
-                        provider="claude",
-                        timestamp=event_time,
-                        role="user" if obj_type == "user" else "assistant",
-                        kind="message",
-                        title="Image",
-                        body="[image block omitted from joined transcript]",
-                        cwd=cwd,
-                    )
-                )
-
-    return events
-
-
-def parse_codex_events(candidate: SessionCandidate, path: Path) -> list[Event]:
-    output_call_ids = collect_codex_response_output_call_ids(path)
-    events: list[Event] = []
-    for line_number, obj in iter_jsonl(path):
-        timestamp = parse_json_timestamp(obj.get("timestamp"))
-        if not timestamp:
-            continue
-        obj_type = obj.get("type")
-        payload = obj.get("payload") if isinstance(obj.get("payload"), dict) else {}
-
-        if obj_type == "response_item":
-            events.extend(parse_codex_response_item(candidate, payload, timestamp))
-            continue
-
-        if obj_type != "event_msg":
-            continue
-
-        payload_type = payload.get("type")
-        if payload_type in ("token_count", "task_started"):
-            continue
-        if payload_type in ("user_message", "agent_message"):
-            continue
-        if payload.get("call_id") in output_call_ids and payload_type in (
-            "exec_command_end",
-            "patch_apply_end",
-        ):
-            continue
-
-        event = parse_codex_event_msg(candidate, payload, timestamp)
-        if event:
-            events.append(event)
-    return events
-
-
-def collect_codex_response_output_call_ids(path: Path) -> set[str]:
-    call_ids: set[str] = set()
-    for _, obj in iter_jsonl(path):
-        if obj.get("type") != "response_item":
-            continue
-        payload = obj.get("payload") if isinstance(obj.get("payload"), dict) else {}
-        if payload.get("type") == "function_call_output" and payload.get("call_id"):
-            call_ids.add(str(payload["call_id"]))
-    return call_ids
-
-
-def parse_codex_response_item(
-    candidate: SessionCandidate, payload: dict[str, Any], timestamp: datetime
-) -> list[Event]:
-    payload_type = payload.get("type")
-    events: list[Event] = []
-
-    if payload_type == "message":
-        role = stringify_content(payload.get("role")) or "assistant"
-        if role in ("developer", "system"):
-            return []
-        text = extract_content_text(payload.get("content"))
-        if not text:
-            return []
-        if role == "user" and is_internal_codex_text(text):
-            return []
-        title = role.title()
-        kind = "message"
-        events.append(
-            Event(
-                session_id=candidate.lane_id,
-                provider="codex",
-                timestamp=timestamp,
-                role=role,
-                kind=kind,
-                title=title,
-                body=text,
-                cwd=candidate.cwd,
-            )
-        )
-        return events
-
-    if payload_type == "function_call":
-        name = stringify_content(payload.get("name")) or "function_call"
-        args = parse_json_maybe(payload.get("arguments"))
-        events.append(
-            Event(
-                session_id=candidate.lane_id,
-                provider="codex",
-                timestamp=timestamp,
-                role="tool",
-                kind=tool_kind(name),
-                title=name,
-                body=format_tool_input(name, args),
-                cwd=candidate.cwd,
-                call_id=stringify_content(payload.get("call_id")) or None,
-            )
-        )
-        return events
-
-    if payload_type == "function_call_output":
-        output = stringify_content(payload.get("output"))
-        if output:
-            events.append(
-                Event(
-                    session_id=candidate.lane_id,
-                    provider="codex",
-                    timestamp=timestamp,
-                    role="tool",
-                    kind="tool_result",
-                    title="Tool result",
-                    body=output,
-                    cwd=candidate.cwd,
-                    call_id=stringify_content(payload.get("call_id")) or None,
-                    is_error=looks_like_error_output(output),
-                )
-            )
-        return events
-
-    if payload_type == "web_search_call":
-        events.append(
-            Event(
-                session_id=candidate.lane_id,
-                provider="codex",
-                timestamp=timestamp,
-                role="tool",
-                kind="tool_use",
-                title="Web search",
-                body=stringify_content(payload),
-                cwd=candidate.cwd,
-            )
-        )
-        return events
-
-    return events
-
-
-def parse_codex_event_msg(
-    candidate: SessionCandidate, payload: dict[str, Any], timestamp: datetime
-) -> Event | None:
-    payload_type = payload.get("type")
-    cwd = payload.get("cwd") if isinstance(payload.get("cwd"), str) else candidate.cwd
-
-    if payload_type == "exec_command_end":
-        command = payload.get("command")
-        body = stringify_content(payload.get("aggregated_output"))
-        if not body:
-            body = combine_stdout_stderr(payload)
-        title = command_to_title(command) or "Command"
-        return Event(
-            session_id=candidate.lane_id,
-            provider="codex",
-            timestamp=timestamp,
-            role="tool",
-            kind="tool_result",
-            title=title,
-            body=body or "(no output)",
-            cwd=cwd,
-            call_id=stringify_content(payload.get("call_id")) or None,
-            is_error=payload.get("exit_code") not in (None, 0),
-        )
-
-    if payload_type == "patch_apply_end":
-        body = combine_stdout_stderr(payload) or stringify_content(payload)
-        return Event(
-            session_id=candidate.lane_id,
-            provider="codex",
-            timestamp=timestamp,
-            role="tool",
-            kind="file_edit",
-            title="Patch applied",
-            body=body,
-            cwd=cwd,
-            call_id=stringify_content(payload.get("call_id")) or None,
-            is_error=payload.get("status") not in (None, "completed", "success"),
-        )
-
-    if payload_type == "web_search_end":
-        action = payload.get("action")
-        return Event(
-            session_id=candidate.lane_id,
-            provider="codex",
-            timestamp=timestamp,
-            role="tool",
-            kind="tool_result",
-            title="Web result",
-            body=stringify_content(action or payload),
-            cwd=cwd,
-            call_id=stringify_content(payload.get("call_id")) or None,
-        )
-
-    if payload_type in ("task_complete", "turn_aborted"):
-        title = "Turn complete" if payload_type == "task_complete" else "Turn aborted"
-        body = stringify_content(payload.get("last_agent_message") or payload)
-        return Event(
-            session_id=candidate.lane_id,
-            provider="codex",
-            timestamp=timestamp,
-            role="system",
-            kind="status",
-            title=title,
-            body=body,
-            cwd=cwd,
-            is_error=payload_type == "turn_aborted",
-        )
-
-    return None
-
-
-def parse_json_maybe(value: Any) -> Any:
-    if not isinstance(value, str):
-        return value
-    try:
-        return json.loads(value)
-    except json.JSONDecodeError:
-        return value
-
-
-def tool_kind(name: str) -> str:
-    lower = name.lower()
-    if lower in {"bash", "exec_command", "shell", "terminal"}:
-        return "command"
-    if lower in {"edit", "multiedit", "write", "apply_patch"} or "patch" in lower:
-        return "file_edit"
-    return "tool_use"
-
-
-def format_tool_input(name: str, value: Any) -> str:
-    if not isinstance(value, dict):
-        return stringify_content(value)
-
-    lower = name.lower()
-    if lower in {"bash", "exec_command"}:
-        command = value.get("command") or value.get("cmd")
-        workdir = value.get("workdir")
-        description = value.get("description")
-        parts = []
-        if description:
-            parts.append(f"# {description}")
-        if workdir:
-            parts.append(f"# cwd: {workdir}")
-        if isinstance(command, list):
-            parts.append(" ".join(str(part) for part in command))
-        elif command:
-            parts.append(str(command))
-        if parts:
-            return "\n".join(parts)
-
-    if lower in {"edit", "multiedit", "write"}:
-        file_path = value.get("file_path") or value.get("path")
-        pieces = []
-        if file_path:
-            pieces.append(f"File: {file_path}")
-        for key in ("old_string", "new_string", "content", "edits"):
-            if key in value:
-                pieces.append(f"\n{key}:\n{stringify_content(value[key])}")
-        if pieces:
-            return "\n".join(pieces)
-
-    return json.dumps(value, indent=2, ensure_ascii=False)
-
-
-def combine_stdout_stderr(payload: dict[str, Any]) -> str:
-    parts = []
-    stdout = stringify_content(payload.get("stdout"))
-    stderr = stringify_content(payload.get("stderr"))
-    if stdout:
-        parts.append(stdout)
-    if stderr:
-        parts.append(stderr)
-    return "\n\n".join(parts).strip()
-
-
-def command_to_title(command: Any) -> str:
-    if isinstance(command, list):
-        if len(command) >= 3 and command[0].endswith("zsh") and command[1] == "-lc":
-            return str(command[2])
-        return " ".join(str(part) for part in command)
-    if isinstance(command, str):
-        return command
-    return ""
-
-
-def looks_like_error_output(output: str) -> bool:
-    match = EXIT_CODE_RE.search(output)
-    if match:
-        try:
-            return int(match.group(1)) != 0
-        except ValueError:
-            return False
-    return False
-
-
-def event_with_repo_filter(event: Event, repo_folders: list[str]) -> bool:
-    return cwd_matches_repo(event.cwd, repo_folders)
 
 
 def build_html_data(
@@ -1092,6 +359,7 @@ def build_html_data(
     ):
         if candidate.lane_id not in active_session_ids:
             continue
+        extras = candidate.extras
         sessions.append(
             {
                 "id": candidate.lane_id,
@@ -1103,10 +371,10 @@ def build_html_data(
                 "started_at": isoformat_z(candidate.started_at),
                 "ended_at": isoformat_z(candidate.ended_at),
                 "summary": redact_secrets(candidate.summary),
-                "is_subagent": candidate.is_subagent,
-                "parent_session_id": candidate.parent_session_id,
-                "agent_id": candidate.agent_id,
-                "description": redact_secrets(candidate.description),
+                "is_subagent": bool(extras.get("is_subagent")),
+                "parent_session_id": extras.get("parent_session_id"),
+                "agent_id": extras.get("agent_id"),
+                "description": redact_secrets(extras.get("description", "")),
             }
         )
 
@@ -1168,6 +436,17 @@ def copy_static_assets(output_dir: Path) -> None:
     shutil.copytree(STATIC_DIR, dest)
 
 
+def generate_provider_styles() -> str:
+    """Per-provider color accents, emitted so adding an adapter requires no CSS edits."""
+    rules: list[str] = []
+    for adapter in ADAPTERS.values():
+        rules.append(
+            f".lane-header.{adapter.name} {{ border-top: 4px solid {adapter.color}; }}\n"
+            f".index-item.{adapter.name} {{ border-left-color: {adapter.color}; }}"
+        )
+    return "\n".join(rules)
+
+
 def write_html_archive(output: Path, data: dict[str, Any], prompts_per_page: int) -> Path:
     if prompts_per_page < 1:
         raise SystemExit("--page-prompts must be at least 1")
@@ -1182,6 +461,7 @@ def write_html_archive(output: Path, data: dict[str, Any], prompts_per_page: int
 
     page_template = load_template("page.html")
     index_template = load_template("index.html")
+    provider_styles = generate_provider_styles()
 
     turns = build_turns(data["events"])
     if data["events"] and not turns:
@@ -1208,31 +488,43 @@ def write_html_archive(output: Path, data: dict[str, Any], prompts_per_page: int
             "total_pages": total_pages,
             "total_events": len(data["events"]),
         }
-        write_page_html(output_dir / page_filename(page_num), page_data, page_template)
+        write_page_html(
+            output_dir / page_filename(page_num), page_data, page_template, provider_styles
+        )
 
     index_data = build_index_data(data, turns, total_pages, prompts_per_page, session_by_id)
-    write_index_html(output_dir / "index.html", index_data, total_pages, index_template)
+    write_index_html(
+        output_dir / "index.html", index_data, total_pages, index_template, provider_styles
+    )
     return output_dir
 
 
-def write_page_html(path: Path, data: dict[str, Any], template: Template) -> None:
+def write_page_html(
+    path: Path, data: dict[str, Any], template: Template, provider_styles: str
+) -> None:
     data_json = json.dumps(data, ensure_ascii=False).replace("</", "<\\/")
     title = f"Koda Timeline - page {data['page']}/{data['total_pages']}"
     html_text = template.substitute(
         page_title=title,
         page_heading=title,
         pagination_html=pagination_html(data["page"], data["total_pages"]),
+        provider_styles=provider_styles,
         data_json=data_json,
     )
     path.write_text(html_text, encoding="utf-8")
 
 
 def write_index_html(
-    path: Path, index_data: dict[str, Any], total_pages: int, template: Template
+    path: Path,
+    index_data: dict[str, Any],
+    total_pages: int,
+    template: Template,
+    provider_styles: str,
 ) -> None:
     html_text = template.substitute(
         index_items=index_data["items_html"],
         pagination_html=index_pagination_html(total_pages),
+        provider_styles=provider_styles,
         prompt_count=index_data["prompt_count"],
         message_count=index_data["message_count"],
         tool_call_count=index_data["tool_call_count"],
@@ -1329,7 +621,9 @@ def build_index_data(
                 (
                     commit_ts or prompt_event["timestamp"],
                     prompt_count * 2 + 1,
-                    render_index_commit(commit_hash, commit_title, commit_ts or prompt_event["timestamp"]),
+                    render_index_commit(
+                        commit_hash, commit_title, commit_ts or prompt_event["timestamp"]
+                    ),
                 )
             )
 
@@ -1432,8 +726,6 @@ def format_detail_stats(events: list[dict[str, Any]]) -> str:
     return " · ".join(f"{count} {label}" for label, count in sorted(counts.items()))
 
 
-PROSE_KINDS = frozenset({"message", "thinking"})
-
 _MARKDOWN = markdown.Markdown(extensions=["fenced_code"], output_format="html")
 
 
@@ -1492,7 +784,7 @@ def print_dry_run(candidates: list[SessionCandidate], display_tz: timezone) -> N
             if candidate.started_at
             else "unknown"
         )
-        subagent = " subagent" if candidate.is_subagent else ""
+        subagent = " subagent" if candidate.extras.get("is_subagent") else ""
         print(
             f"{start}  {candidate.provider:<6}{subagent:<9}  "
             f"{candidate.cwd or '(unknown cwd)'}  {candidate.source_path}"
@@ -1507,16 +799,9 @@ def main() -> int:
     since = parse_cli_datetime(args.since, display_tz, is_until=False)
     until = parse_cli_datetime(args.until, display_tz, is_until=True)
     repo_folders = normalize_repo_folders(args.repo_folder)
-    providers = set(args.provider or ("claude", "codex"))
+    providers = set(args.provider or ADAPTERS.keys())
 
-    candidates: list[SessionCandidate] = []
-    if "claude" in providers:
-        candidates.extend(
-            discover_claude_sessions(args.claude_source.expanduser(), not args.no_subagents)
-        )
-    if "codex" in providers:
-        candidates.extend(discover_codex_sessions(args.codex_source.expanduser()))
-
+    candidates = discover_all(providers, args)
     selected = select_candidates(candidates, since, until, repo_folders)
 
     if args.dry_run:
@@ -1524,15 +809,10 @@ def main() -> int:
         return 0
 
     copy_root = prepare_copy_root(args.copy_root)
-    copied = copy_selected_sources(
-        selected,
-        copy_root,
-        args.claude_source.expanduser(),
-        args.codex_source.expanduser(),
-    )
+    copied = copy_selected_sources(selected, copy_root, adapter_sources(args))
     events = parse_events_for_candidates(copied, since, until)
     if repo_folders:
-        events = [event for event in events if event_with_repo_filter(event, repo_folders)]
+        events = [event for event in events if cwd_matches_repo(event.cwd, repo_folders)]
 
     data = build_html_data(copied, events, copy_root, display_tz, args.timezone, repo_folders)
     output_dir = write_html_archive(args.output, data, args.page_prompts)

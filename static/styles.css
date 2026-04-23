@@ -18,9 +18,9 @@
   --code-text: #d7e8d0;
   --commit-bg: #fff3e0;
   --commit-border: #ff9800;
-  --claude: #b05a2a;
-  --codex: #1d6b6b;
 }
+/* Per-provider accent colors are generated from the adapter registry
+   and injected as an inline <style> block in each HTML page. */
 
 * { box-sizing: border-box; }
 
@@ -148,8 +148,6 @@ main { max-width: 1680px; margin: 0 auto; padding: 16px; }
 }
 .lane-header:hover { background: #eef2f6; }
 .lane-header:focus-visible { outline: 2px solid var(--user-border); outline-offset: 1px; }
-.lane-header.claude { border-top: 4px solid var(--claude); }
-.lane-header.codex { border-top: 4px solid var(--codex); }
 .lane-header .lane-toggle-icon {
   position: absolute;
   top: 6px;
@@ -322,8 +320,6 @@ main { max-width: 1680px; margin: 0 auto; padding: 16px; }
   box-shadow: 0 1px 3px rgba(0,0,0,0.1);
 }
 .index-item { background: var(--user-bg); border-left: 4px solid var(--user-border); }
-.index-item.claude { border-left-color: var(--claude); }
-.index-item.codex { border-left-color: var(--codex); }
 .index-item a,
 .index-commit a { display: block; color: inherit; text-decoration: none; }
 .index-item a:hover { background: rgba(25, 118, 210, 0.08); }
