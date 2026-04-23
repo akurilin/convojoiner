@@ -1,0 +1,11 @@
+[
+  {
+    "id": "1700000000000",
+    "ts": 1700000000000,
+    "task": "help me implement a login feature",
+    "tokensIn": 1234,
+    "tokensOut": 567,
+    "totalCost": 0.01,
+    "cwdOnTaskInitialization": "/tmp/fake-repo"
+  }
+]

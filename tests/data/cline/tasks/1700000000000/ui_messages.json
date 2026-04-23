@@ -1,0 +1,10 @@
+[
+  {"ts": 1700000000000, "type": "say", "say": "task", "text": "help me implement a login feature"},
+  {"ts": 1700000005000, "type": "say", "say": "reasoning", "reasoning": "I should start by reading the existing auth module to understand the structure."},
+  {"ts": 1700000010000, "type": "say", "say": "text", "text": "Let me look at the existing auth code first."},
+  {"ts": 1700000015000, "type": "ask", "ask": "command", "text": "ls src/auth/"},
+  {"ts": 1700000020000, "type": "say", "say": "command_output", "text": "login.ts\nlogout.ts"},
+  {"ts": 1700000025000, "type": "say", "say": "text", "text": "Found the auth module. Here is my implementation plan."},
+  {"ts": 1700000030000, "type": "say", "say": "user_feedback", "text": "great, go ahead with that plan"},
+  {"ts": 1700000035000, "type": "say", "say": "completion_result", "text": "Feature implemented successfully."}
+]

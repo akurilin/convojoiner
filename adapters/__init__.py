@@ -19,11 +19,13 @@ from .base import (
     stringify_content,
 )
 from .claude import ClaudeAdapter
+from .cline import ClineAdapter
 from .codex import CodexAdapter
 
 
 ADAPTERS: dict[str, SessionAdapter] = {
-    adapter.name: adapter for adapter in (ClaudeAdapter(), CodexAdapter())
+    adapter.name: adapter
+    for adapter in (ClaudeAdapter(), ClineAdapter(), CodexAdapter())
 }
 
 

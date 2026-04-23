@@ -1,12 +1,12 @@
 # Convojoiner
 
-Convojoiner generates a static HTML archive that joins local Claude Code and
-Codex session transcripts into one browseable timeline.
+Convojoiner generates a static HTML archive that joins local coding-agent
+session transcripts from Claude Code, Cline, and Codex into one browseable
+timeline.
 
-The tool treats the original transcript stores as read-only. It discovers matching
-sessions from `~/.claude/projects` and `~/.codex/sessions`, copies the selected
-JSONL files into a fresh `/tmp/convojoiner-*` directory, parses the copies, and
-writes the HTML archive from those copied files.
+The tool treats the original transcript stores as strictly read-only. It
+discovers sessions under each provider's storage directory, parses them in
+place, and writes the HTML archive to a separate output directory.
 
 ## Prior art
 
@@ -17,11 +17,12 @@ that idea in a few directions:
 
 - **Multiple local folders** — scope the archive to one or more repo/worktree
   paths with repeated `--repo-folder` flags.
-- **Multiple concurrent sessions** — concurrent Claude and Codex sessions are
-  laid out side-by-side in per-minute lanes rather than as a single linear log.
-- **Multiple providers** — both Claude Code and Codex are parsed out of the box,
-  with the goal of adding more coding-agent formats (OpenCode, Gemini, Amp,
-  Cursor, etc.) behind a common adapter.
+- **Multiple concurrent sessions** — sessions from different providers and tools
+  are laid out side-by-side in per-minute lanes rather than as a single linear log.
+- **Multiple providers** — Claude Code, Cline (the `saoudrizwan.claude-dev` VS
+  Code extension), and Codex are parsed out of the box behind a common adapter
+  interface, so adding another tool (OpenCode, Gemini, Amp, Cursor, Aider, …)
+  is a matter of writing one `SessionAdapter` subclass.
 
 ## Usage
 
@@ -46,11 +47,12 @@ python3 convojoiner.py \
   --dry-run
 ```
 
-Include only one provider:
+Include only one provider (repeatable):
 
 ```bash
 python3 convojoiner.py --provider codex --since 2026-04-19
 python3 convojoiner.py --provider claude --since 2026-04-19
+python3 convojoiner.py --provider cline --since 2026-04-19
 ```
 
 Claude Code subagent JSONL files are included by default. Exclude them with:
@@ -85,13 +87,15 @@ archive does not load external assets or make network requests.
 
 ## Source Stores
 
-Default source locations:
+Default source locations (macOS):
 
 - Claude Code: `~/.claude/projects`
 - Codex: `~/.codex/sessions`
+- Cline: `~/Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev`
 
-Use `--claude-source` or `--codex-source` to point at copied or alternate stores.
-Use `--copy-root` when you want the copied JSONL files in a known directory.
+Use `--claude-source`, `--codex-source`, or `--cline-source` to point at
+alternate stores (e.g. copies you've archived elsewhere, or non-macOS
+locations).
 
 ## Secret redaction
 

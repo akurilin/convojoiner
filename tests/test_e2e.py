@@ -32,6 +32,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = Path(__file__).resolve().parent / "data"
 CLAUDE_FIXTURE = DATA_DIR / "claude" / "projects"
 CODEX_FIXTURE = DATA_DIR / "codex" / "sessions"
+CLINE_FIXTURE = DATA_DIR / "cline"
 CLAUDE_SECRET_FIXTURE = DATA_DIR / "claude_with_secret" / "projects"
 
 
@@ -40,6 +41,7 @@ def run_cli(
     output: Path,
     claude_source: Path,
     codex_source: Path,
+    cline_source: Path,
     extra: list[str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     args = [
@@ -47,6 +49,7 @@ def run_cli(
         str(REPO_ROOT / "convojoiner.py"),
         "--claude-source", str(claude_source),
         "--codex-source", str(codex_source),
+        "--cline-source", str(cline_source),
         "--output", str(output),
         "--since", "2019-01-01",
     ]
@@ -60,6 +63,7 @@ def _common_paths(tmp_path: Path) -> dict[str, Path]:
         "output": tmp_path / "archive",
         "missing_claude": tmp_path / "no-claude-here",
         "missing_codex": tmp_path / "no-codex-here",
+        "missing_cline": tmp_path / "no-cline-here",
     }
 
 
@@ -69,6 +73,7 @@ def test_claude_only_run(tmp_path: Path) -> None:
         output=p["output"],
         claude_source=CLAUDE_FIXTURE,
         codex_source=p["missing_codex"],
+        cline_source=p["missing_cline"],
         extra=["--provider", "claude"],
     )
 
@@ -81,9 +86,10 @@ def test_claude_only_run(tmp_path: Path) -> None:
     index = (p["output"] / "index.html").read_text(encoding="utf-8")
     assert "please refactor the auth module" in index
     assert "Claude aaa11111" in index  # session label from short_id
-    # No Codex content leaked in
+    # Other providers' content doesn't leak in
     assert "codex-session" not in index
     assert "deployment script" not in index
+    assert "login feature" not in index
 
 
 def test_codex_only_run(tmp_path: Path) -> None:
@@ -92,6 +98,7 @@ def test_codex_only_run(tmp_path: Path) -> None:
         output=p["output"],
         claude_source=p["missing_claude"],
         codex_source=CODEX_FIXTURE,
+        cline_source=p["missing_cline"],
         extra=["--provider", "codex"],
     )
 
@@ -102,24 +109,50 @@ def test_codex_only_run(tmp_path: Path) -> None:
     index = (p["output"] / "index.html").read_text(encoding="utf-8")
     assert "write a script to deploy the api" in index
     assert "Codex codex-se" in index  # short_id of "codex-session-bbb22222"
-    # No Claude content leaked in
+    # Other providers' content doesn't leak in
     assert "refactor the auth module" not in index
+    assert "login feature" not in index
 
 
-def test_both_providers_interleaved(tmp_path: Path) -> None:
+def test_cline_only_run(tmp_path: Path) -> None:
+    p = _common_paths(tmp_path)
+    result = run_cli(
+        output=p["output"],
+        claude_source=p["missing_claude"],
+        codex_source=p["missing_codex"],
+        cline_source=CLINE_FIXTURE,
+        extra=["--provider", "cline"],
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert (p["output"] / "index.html").exists()
+    assert (p["output"] / "page-001.html").exists()
+
+    index = (p["output"] / "index.html").read_text(encoding="utf-8")
+    assert "help me implement a login feature" in index
+    assert "Cline 17000000" in index  # short_id of taskId "1700000000000"
+    # Other providers' content doesn't leak in
+    assert "refactor the auth module" not in index
+    assert "deployment script" not in index
+
+
+def test_all_providers_interleaved(tmp_path: Path) -> None:
     p = _common_paths(tmp_path)
     result = run_cli(
         output=p["output"],
         claude_source=CLAUDE_FIXTURE,
         codex_source=CODEX_FIXTURE,
+        cline_source=CLINE_FIXTURE,
     )
 
     assert result.returncode == 0, result.stderr
     index = (p["output"] / "index.html").read_text(encoding="utf-8")
     assert "please refactor the auth module" in index
     assert "write a script to deploy the api" in index
+    assert "help me implement a login feature" in index
     assert "Claude aaa11111" in index
     assert "Codex codex-se" in index
+    assert "Cline 17000000" in index
 
 
 def test_redaction_applied_end_to_end(tmp_path: Path) -> None:
@@ -140,6 +173,7 @@ def test_redaction_applied_end_to_end(tmp_path: Path) -> None:
         output=p["output"],
         claude_source=staged_source,
         codex_source=p["missing_codex"],
+        cline_source=p["missing_cline"],
         extra=["--provider", "claude"],
     )
 
@@ -169,6 +203,7 @@ def test_cli_rejects_invalid_inputs(
         output=p["output"],
         claude_source=CLAUDE_FIXTURE,
         codex_source=p["missing_codex"],
+        cline_source=p["missing_cline"],
         extra=["--provider", "claude", *cli_extra],
     )
     assert result.returncode != 0
