@@ -52,6 +52,12 @@ that idea in a few directions:
   Code extension), and Codex are parsed out of the box behind a common adapter
   interface, so adding another tool (OpenCode, Gemini, Amp, Cursor, Aider, …)
   is a matter of writing one `SessionAdapter` subclass.
+- **Secret redaction** — every rendered transcript is first scrubbed through
+  Yelp's [`detect-secrets`](https://github.com/Yelp/detect-secrets) plus a
+  handful of custom detectors for keys the upstream doesn't cover (Anthropic
+  `sk-ant-*`, OpenAI project keys, GitHub fine-grained PATs, Google API/OAuth,
+  Supabase new-format keys, PEM private-key blocks). Credentials that ended
+  up in your conversations don't leak into a static HTML page you might share.
 
 ## Usage
 
