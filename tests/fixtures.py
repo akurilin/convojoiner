@@ -23,6 +23,7 @@ def _pad(char: str, n: int) -> str:
 
 # --- Custom-plugin detectors (gaps we cover ourselves) ---
 
+
 def fake_anthropic_key() -> str:
     return "sk-" + "ant-" + "api03-" + _pad("A", 95)
 
@@ -56,6 +57,7 @@ def fake_supabase_access_token() -> str:
 
 
 # --- Built-in detect-secrets detectors we rely on ---
+
 
 def fake_aws_access_key() -> str:
     # AWS publishes this exact value as a canonical example, but we split

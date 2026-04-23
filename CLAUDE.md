@@ -55,3 +55,32 @@ Secret-detection fixtures are assembled from split string literals at runtime
 so no complete secret ever appears as a contiguous literal in the repo.
 `test_source_has_no_literal_secrets` enforces this — if it fails, fix the
 offending fixture split, don't suppress the test.
+
+## Lint, format, typecheck
+
+The project uses `ruff` (lint + format) and `mypy` (type checking), wired up
+through `pre-commit`. All three run in CI on every push.
+
+First-time setup (once per clone):
+
+```
+.venv/bin/pre-commit install
+```
+
+This installs a local git hook so `ruff`, `ruff format`, and `mypy` run
+automatically on `git commit`. The same hooks run again in CI against the
+whole repo, so bypassing with `--no-verify` locally won't get anything past
+`main`.
+
+Manual runs:
+
+```
+.venv/bin/ruff check . --fix       # lint + autofix
+.venv/bin/ruff format .            # format
+.venv/bin/mypy .                    # type check
+.venv/bin/pre-commit run --all-files  # all three at once
+```
+
+Rule-set tuning lives in `pyproject.toml`. If a lint rule is consistently
+fighting readable code, add it to the `[tool.ruff.lint] ignore` list with a
+one-line comment explaining why — don't sprinkle `# noqa` across the codebase.

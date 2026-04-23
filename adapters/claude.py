@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -18,7 +18,6 @@ from .base import (
     short_id,
     stringify_content,
 )
-
 
 INTERNAL_PREFIXES = (
     "<local-command-caveat>",
@@ -57,13 +56,15 @@ class ClaudeAdapter(SessionAdapter):
             timestamp = parse_json_timestamp(obj.get("timestamp"))
             if not timestamp:
                 continue
-            cwd = obj.get("cwd") if isinstance(obj.get("cwd"), str) else candidate.cwd
+            cwd_raw = obj.get("cwd")
+            cwd = cwd_raw if isinstance(cwd_raw, str) else candidate.cwd
             obj_type = obj.get("type")
 
             if obj.get("isMeta") or obj_type in ("file-history-snapshot", "attachment"):
                 continue
 
-            message = obj.get("message") if isinstance(obj.get("message"), dict) else {}
+            message_raw = obj.get("message")
+            message: dict[str, Any] = message_raw if isinstance(message_raw, dict) else {}
             content = message.get("content")
 
             if obj_type == "system":

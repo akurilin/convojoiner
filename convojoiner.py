@@ -10,7 +10,7 @@ import os
 import re
 import shutil
 import webbrowser
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import UTC, date, datetime, time, timedelta, tzinfo
 from pathlib import Path
 from string import Template
 from typing import Any
@@ -25,7 +25,6 @@ from adapters import (
     first_useful_summary,
 )
 from redaction import REDACTION_COUNTS, redact_secrets
-
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 TEMPLATES_DIR = SCRIPT_DIR / "templates"
@@ -61,17 +60,13 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--until",
-        help=(
-            "Include events before this date/datetime. YYYY-MM-DD includes that full local day."
-        ),
+        help=("Include events before this date/datetime. YYYY-MM-DD includes that full local day."),
     )
     parser.add_argument(
         "--repo-folder",
         action="append",
         default=[],
-        help=(
-            "Repo/worktree folder to include. Can be passed more than once; subfolders match."
-        ),
+        help=("Repo/worktree folder to include. Can be passed more than once; subfolders match."),
     )
     parser.add_argument(
         "--provider",
@@ -106,16 +101,16 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def get_display_tz(name: str) -> timezone:
+def get_display_tz(name: str) -> tzinfo:
     if name == "local":
-        return datetime.now().astimezone().tzinfo or timezone.utc
+        return datetime.now().astimezone().tzinfo or UTC
     try:
         return ZoneInfo(name)
     except ZoneInfoNotFoundError as exc:
         raise SystemExit(f"Unknown timezone: {name}") from exc
 
 
-def parse_cli_datetime(value: str | None, display_tz: timezone, is_until: bool) -> datetime | None:
+def parse_cli_datetime(value: str | None, display_tz: tzinfo, is_until: bool) -> datetime | None:
     if not value:
         return None
     try:
@@ -124,21 +119,19 @@ def parse_cli_datetime(value: str | None, display_tz: timezone, is_until: bool) 
             local_dt = datetime.combine(parsed_date, time.min, tzinfo=display_tz)
             if is_until:
                 local_dt += timedelta(days=1)
-            return local_dt.astimezone(timezone.utc)
+            return local_dt.astimezone(UTC)
 
         normalized = value.replace("Z", "+00:00")
         parsed_dt = datetime.fromisoformat(normalized)
         if parsed_dt.tzinfo is None:
             parsed_dt = parsed_dt.replace(tzinfo=display_tz)
-        return parsed_dt.astimezone(timezone.utc)
+        return parsed_dt.astimezone(UTC)
     except ValueError as exc:
         raise SystemExit(f"Invalid datetime: {value}") from exc
 
 
 def adapter_sources(args: argparse.Namespace) -> dict[str, Path]:
-    return {
-        name: getattr(args, f"{name}_source").expanduser() for name in ADAPTERS
-    }
+    return {name: getattr(args, f"{name}_source").expanduser() for name in ADAPTERS}
 
 
 def discover_all(providers: set[str], args: argparse.Namespace) -> list[SessionCandidate]:
@@ -243,14 +236,14 @@ def parse_events_for_candidates(
 def build_html_data(
     candidates: list[SessionCandidate],
     events: list[Event],
-    display_tz: timezone,
+    display_tz: tzinfo,
     timezone_label: str,
     repo_folders: list[str],
 ) -> dict[str, Any]:
     active_session_ids = {event.session_id for event in events}
     sessions = []
     for candidate in sorted(
-        candidates, key=lambda c: (c.started_at or datetime.max.replace(tzinfo=timezone.utc))
+        candidates, key=lambda c: c.started_at or datetime.max.replace(tzinfo=UTC)
     ):
         if candidate.lane_id not in active_session_ids:
             continue
@@ -299,7 +292,7 @@ def build_html_data(
         )
 
     return {
-        "generated_at": isoformat_z(datetime.now(timezone.utc)),
+        "generated_at": isoformat_z(datetime.now(UTC)),
         "timezone": timezone_label,
         "repo_folders": repo_folders,
         "sessions": sessions,
@@ -310,7 +303,7 @@ def build_html_data(
 def isoformat_z(value: datetime | None) -> str:
     if not value:
         return ""
-    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
 
 
 def resolve_output_dir(output: Path) -> Path:
@@ -496,9 +489,7 @@ def build_index_data(
         if event["kind"] == "message" and event["role"] in {"user", "assistant"}
     )
     tool_call_count = sum(
-        1
-        for event in data["events"]
-        if event["kind"] in {"command", "tool_use", "file_edit"}
+        1 for event in data["events"] if event["kind"] in {"command", "tool_use", "file_edit"}
     )
 
     for turn_index, turn in enumerate(turns):
@@ -561,7 +552,7 @@ def render_index_turn(
   <a href="{link}">
     <div class="index-item-header">
       <span class="index-item-number">#{prompt_number}</span>
-      <time datetime="{html.escape(prompt_event['timestamp'])}">{html.escape(prompt_event['display_time'])}</time>
+      <time datetime="{html.escape(prompt_event["timestamp"])}">{html.escape(prompt_event["display_time"])}</time>
     </div>
     <div class="index-item-content">{render_markdown(turn["prompt_text"])}{final_html}</div>
   </a>
@@ -599,7 +590,7 @@ def extract_commits(events: list[dict[str, Any]]) -> list[tuple[str, str, str]]:
 def final_assistant_text(events: list[dict[str, Any]]) -> str:
     for event in reversed(events):
         if event["kind"] == "message" and event["role"] == "assistant" and event.get("body"):
-            return event["body"]
+            return str(event["body"])
     return ""
 
 
@@ -628,7 +619,7 @@ def render_markdown(text: str) -> str:
     if not text:
         return ""
     _MARKDOWN.reset()
-    return _MARKDOWN.convert(text)
+    return str(_MARKDOWN.convert(text))
 
 
 def page_filename(page_num: int) -> str:
@@ -669,10 +660,10 @@ def index_pagination_html(total_pages: int) -> str:
     return "".join(pieces)
 
 
-def print_dry_run(candidates: list[SessionCandidate], display_tz: timezone) -> None:
+def print_dry_run(candidates: list[SessionCandidate], display_tz: tzinfo) -> None:
     print(f"Selected {len(candidates)} sessions")
     for candidate in sorted(
-        candidates, key=lambda c: (c.started_at or datetime.max.replace(tzinfo=timezone.utc))
+        candidates, key=lambda c: c.started_at or datetime.max.replace(tzinfo=UTC)
     ):
         start = (
             candidate.started_at.astimezone(display_tz).strftime("%Y-%m-%d %H:%M:%S")

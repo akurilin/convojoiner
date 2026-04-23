@@ -9,15 +9,15 @@ Public API:
 from __future__ import annotations
 
 import re
-from typing import Iterable
+from typing import Any, cast
 
 from detect_secrets.core.plugins.util import get_mapping_from_secret_type_to_class
 from detect_secrets.core.scan import scan_line
 from detect_secrets.plugins.base import RegexBasedDetector
 from detect_secrets.settings import transient_settings
 
-
 # ---------- Custom detectors for gaps in detect-secrets ----------
+
 
 class AnthropicKeyDetector(RegexBasedDetector):
     secret_type = "anthropic-key"
@@ -138,9 +138,11 @@ def _slugify(label: str) -> str:
 
 
 def _register_custom_detectors() -> None:
-    mapping = get_mapping_from_secret_type_to_class()
+    # detect-secrets' abstract-property annotations confuse mypy about the
+    # mapping's value type; cast to Any for the writes.
+    mapping = cast(dict[str, Any], get_mapping_from_secret_type_to_class())
     for detector in CUSTOM_DETECTORS:
-        mapping[detector.secret_type] = detector
+        mapping[str(detector.secret_type)] = detector
 
 
 def _plugins_config() -> list[dict[str, str]]:
@@ -153,6 +155,7 @@ _PLUGINS_USED = _plugins_config()
 
 
 # ---------- Redaction ----------
+
 
 def redact_secrets(text: str) -> str:
     if not text:

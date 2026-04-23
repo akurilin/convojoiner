@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -19,7 +19,6 @@ from .base import (
     short_id,
     stringify_content,
 )
-
 
 INTERNAL_PREFIXES = (
     "<environment_context>",
@@ -64,7 +63,8 @@ class CodexAdapter(SessionAdapter):
             if not timestamp:
                 continue
             obj_type = obj.get("type")
-            payload = obj.get("payload") if isinstance(obj.get("payload"), dict) else {}
+            payload_raw = obj.get("payload")
+            payload: dict[str, Any] = payload_raw if isinstance(payload_raw, dict) else {}
 
             if obj_type == "response_item":
                 events.extend(self._parse_response_item(candidate, payload, timestamp))
@@ -176,7 +176,8 @@ class CodexAdapter(SessionAdapter):
         self, candidate: SessionCandidate, payload: dict[str, Any], timestamp: datetime
     ) -> Event | None:
         payload_type = payload.get("type")
-        cwd = payload.get("cwd") if isinstance(payload.get("cwd"), str) else candidate.cwd
+        cwd_raw = payload.get("cwd")
+        cwd = cwd_raw if isinstance(cwd_raw, str) else candidate.cwd
 
         if payload_type == "exec_command_end":
             command = payload.get("command")
@@ -263,7 +264,8 @@ def _scan_session(path: Path) -> SessionCandidate | None:
             ended_at = max(ended_at, timestamp) if ended_at else timestamp
 
         obj_type = obj.get("type")
-        payload = obj.get("payload") if isinstance(obj.get("payload"), dict) else {}
+        payload_raw = obj.get("payload")
+        payload: dict[str, Any] = payload_raw if isinstance(payload_raw, dict) else {}
         if obj_type == "session_meta":
             if payload.get("id"):
                 session_id = str(payload["id"])
@@ -277,11 +279,15 @@ def _scan_session(path: Path) -> SessionCandidate | None:
         if not cwd and obj_type == "turn_context" and isinstance(payload.get("cwd"), str):
             cwd = payload["cwd"]
 
-        if not summary and obj_type == "response_item":
-            if payload.get("type") == "message" and payload.get("role") == "user":
-                text = extract_content_text(payload.get("content"))
-                if text and not is_internal_text(text):
-                    summary = first_useful_summary(text)
+        if (
+            not summary
+            and obj_type == "response_item"
+            and payload.get("type") == "message"
+            and payload.get("role") == "user"
+        ):
+            text = extract_content_text(payload.get("content"))
+            if text and not is_internal_text(text):
+                summary = first_useful_summary(text)
 
         if not summary and obj_type == "event_msg" and payload.get("type") == "user_message":
             text = stringify_content(payload.get("message"))
@@ -309,9 +315,7 @@ def _infer_time_from_filename(path: Path) -> datetime | None:
     if not match:
         return None
     try:
-        return datetime.strptime(match.group(1), "%Y-%m-%dT%H-%M-%S").replace(
-            tzinfo=timezone.utc
-        )
+        return datetime.strptime(match.group(1), "%Y-%m-%dT%H-%M-%S").replace(tzinfo=UTC)
     except ValueError:
         return None
 
@@ -321,7 +325,8 @@ def _collect_response_output_call_ids(path: Path) -> set[str]:
     for _, obj in iter_jsonl(path):
         if obj.get("type") != "response_item":
             continue
-        payload = obj.get("payload") if isinstance(obj.get("payload"), dict) else {}
+        payload_raw = obj.get("payload")
+        payload: dict[str, Any] = payload_raw if isinstance(payload_raw, dict) else {}
         if payload.get("type") == "function_call_output" and payload.get("call_id"):
             call_ids.add(str(payload["call_id"]))
     return call_ids

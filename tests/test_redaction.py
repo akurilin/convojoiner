@@ -11,8 +11,13 @@ from pathlib import Path
 
 import pytest
 
-from redaction import REDACTION_COUNTS, MULTILINE_PATTERNS, redact_secrets, reset_counts
-from redaction import CUSTOM_DETECTORS
+from redaction import (
+    CUSTOM_DETECTORS,
+    MULTILINE_PATTERNS,
+    REDACTION_COUNTS,
+    redact_secrets,
+    reset_counts,
+)
 from tests.fixtures import (
     ALL_FAKES,
     fake_anthropic_key,
@@ -38,9 +43,7 @@ def test_detector_redacts_secret(label, builder, expected_slug):
     assert f"[REDACTED:{expected_slug}]" in redacted, (
         f"{label}: expected slug {expected_slug!r} in output {redacted!r}"
     )
-    assert secret not in redacted, (
-        f"{label}: secret not redacted (still present in output)"
-    )
+    assert secret not in redacted, f"{label}: secret not redacted (still present in output)"
 
 
 def test_clean_text_is_unchanged():
@@ -100,9 +103,7 @@ def test_all_custom_detectors_have_fixture_coverage():
     This guard makes that mistake loud."""
     covered = {slug for _, _, slug in ALL_FAKES}
     missing = [
-        detector.__name__
-        for detector in CUSTOM_DETECTORS
-        if detector.secret_type not in covered
+        detector.__name__ for detector in CUSTOM_DETECTORS if detector.secret_type not in covered
     ]
     assert not missing, (
         f"Custom detectors without fixtures in ALL_FAKES: {missing}. "
@@ -116,26 +117,33 @@ def test_source_has_no_literal_secrets():
     We build the scanner regex set directly from the redaction module so any
     detector added later is automatically checked.
     """
-    fixtures_source = (
-        Path(__file__).parent / "fixtures.py"
-    ).read_text(encoding="utf-8")
+    fixtures_source = (Path(__file__).parent / "fixtures.py").read_text(encoding="utf-8")
 
     all_patterns: list[tuple[str, re.Pattern[str]]] = []
     for label, pattern in MULTILINE_PATTERNS:
         all_patterns.append((label, pattern))
     for detector in CUSTOM_DETECTORS:
-        for pat in detector.denylist:
-            all_patterns.append((detector.secret_type, pat))
+        # detect-secrets' RegexBasedDetector declares `denylist` as an
+        # abstractproperty, which confuses mypy about iteration at the
+        # subclass level; we know each subclass overrides it with a concrete
+        # tuple of compiled patterns.
+        for pat in detector.denylist:  # type: ignore[attr-defined]
+            all_patterns.append((str(detector.secret_type), pat))
 
     # Also add a few high-signal built-in patterns whose fakes we assemble by
     # hand (so the guard covers them too).
-    all_patterns.extend([
-        ("aws-access-key", re.compile(r"(?:A3T[A-Z0-9]|ABIA|ACCA|AKIA|ASIA)[0-9A-Z]{16}")),
-        ("github-token", re.compile(r"(ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{36}")),
-        ("openai-token", re.compile(r"sk-[A-Za-z0-9\-_]*[A-Za-z0-9]{20}T3BlbkFJ[A-Za-z0-9]{20}")),
-        ("slack-token", re.compile(r"xox(?:a|b|p|o|s|r)-(?:\d+-)+[a-z0-9]+")),
-        ("stripe-access-key", re.compile(r"(?:r|s)k_live_[0-9a-zA-Z]{24}")),
-    ])
+    all_patterns.extend(
+        [
+            ("aws-access-key", re.compile(r"(?:A3T[A-Z0-9]|ABIA|ACCA|AKIA|ASIA)[0-9A-Z]{16}")),
+            ("github-token", re.compile(r"(ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{36}")),
+            (
+                "openai-token",
+                re.compile(r"sk-[A-Za-z0-9\-_]*[A-Za-z0-9]{20}T3BlbkFJ[A-Za-z0-9]{20}"),
+            ),
+            ("slack-token", re.compile(r"xox(?:a|b|p|o|s|r)-(?:\d+-)+[a-z0-9]+")),
+            ("stripe-access-key", re.compile(r"(?:r|s)k_live_[0-9a-zA-Z]{24}")),
+        ]
+    )
 
     violations = []
     for label, pattern in all_patterns:

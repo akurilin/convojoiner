@@ -27,7 +27,6 @@ import pytest
 
 from tests.fixtures import fake_aws_access_key
 
-
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = Path(__file__).resolve().parent / "data"
 CLAUDE_FIXTURE = DATA_DIR / "claude" / "projects"
@@ -47,11 +46,16 @@ def run_cli(
     args = [
         sys.executable,
         str(REPO_ROOT / "convojoiner.py"),
-        "--claude-source", str(claude_source),
-        "--codex-source", str(codex_source),
-        "--cline-source", str(cline_source),
-        "--output", str(output),
-        "--since", "2019-01-01",
+        "--claude-source",
+        str(claude_source),
+        "--codex-source",
+        str(codex_source),
+        "--cline-source",
+        str(cline_source),
+        "--output",
+        str(output),
+        "--since",
+        "2019-01-01",
     ]
     if extra:
         args.extend(extra)
@@ -180,10 +184,7 @@ def test_redaction_applied_end_to_end(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
 
     # The secret must appear nowhere in the output; its redaction marker must.
-    output_texts = [
-        path.read_text(encoding="utf-8")
-        for path in p["output"].rglob("*.html")
-    ]
+    output_texts = [path.read_text(encoding="utf-8") for path in p["output"].rglob("*.html")]
     joined = "\n".join(output_texts)
     assert secret not in joined
     assert "[REDACTED:aws-access-key]" in joined
