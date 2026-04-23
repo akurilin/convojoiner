@@ -94,6 +94,22 @@ def test_redaction_counts_accumulate_across_calls():
     assert REDACTION_COUNTS.get("anthropic-key") == 2
 
 
+def test_all_custom_detectors_have_fixture_coverage():
+    """If someone adds a detector to CUSTOM_DETECTORS without a corresponding
+    ALL_FAKES entry, the parametrized test would silently skip that detector.
+    This guard makes that mistake loud."""
+    covered = {slug for _, _, slug in ALL_FAKES}
+    missing = [
+        detector.__name__
+        for detector in CUSTOM_DETECTORS
+        if detector.secret_type not in covered
+    ]
+    assert not missing, (
+        f"Custom detectors without fixtures in ALL_FAKES: {missing}. "
+        "Add a fake_* builder in tests/fixtures.py and register it in ALL_FAKES."
+    )
+
+
 def test_source_has_no_literal_secrets():
     """Guard: if someone simplifies a fixture into a single literal, this fires.
 

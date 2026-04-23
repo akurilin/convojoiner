@@ -1,0 +1,2 @@
+{"type":"user","sessionId":"ccc33333-dddd-eeee-ffff-111111111111","cwd":"/tmp/fake-repo","timestamp":"2020-03-10T15:00:00Z","message":{"content":"I accidentally pasted <FAKE_AWS_KEY> into slack, what do I do"}}
+{"type":"assistant","sessionId":"ccc33333-dddd-eeee-ffff-111111111111","cwd":"/tmp/fake-repo","timestamp":"2020-03-10T15:00:02Z","message":{"content":[{"type":"text","text":"Rotate that credential immediately and revoke the old one in the IAM console."}]}}

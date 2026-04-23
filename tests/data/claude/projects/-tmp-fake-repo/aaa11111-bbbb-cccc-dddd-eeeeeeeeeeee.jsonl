@@ -1,0 +1,2 @@
+{"type":"user","sessionId":"aaa11111-bbbb-cccc-dddd-eeeeeeeeeeee","cwd":"/tmp/fake-repo","timestamp":"2020-01-15T10:00:00Z","message":{"content":"please refactor the auth module for me"}}
+{"type":"assistant","sessionId":"aaa11111-bbbb-cccc-dddd-eeeeeeeeeeee","cwd":"/tmp/fake-repo","timestamp":"2020-01-15T10:00:02Z","message":{"content":[{"type":"text","text":"Sure, here is my refactoring plan for the auth module."}]}}
