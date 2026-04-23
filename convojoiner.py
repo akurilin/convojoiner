@@ -449,7 +449,7 @@ def write_page_html(
     path: Path, data: dict[str, Any], template: Template, provider_styles: str
 ) -> None:
     data_json = json.dumps(data, ensure_ascii=False).replace("</", "<\\/")
-    title = f"Koda Timeline - page {data['page']}/{data['total_pages']}"
+    title = f"Convojoiner Timeline - page {data['page']}/{data['total_pages']}"
     html_text = template.substitute(
         page_title=title,
         page_heading=title,

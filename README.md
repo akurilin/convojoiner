@@ -31,8 +31,8 @@ Generate an HTML transcript for two worktrees since April 19, 2026:
 python3 convojoiner.py \
   --since 2026-04-19 \
   --timezone Europe/Rome \
-  --repo-folder /Users/alex/code/koda \
-  --repo-folder /Users/alex/code/koda2 \
+  --repo-folder ~/code/project-a \
+  --repo-folder ~/code/project-b \
   --output ./convojoiner
 ```
 
@@ -42,7 +42,7 @@ Preview what would be selected without copying or writing output:
 python3 convojoiner.py \
   --since 2026-04-19 \
   --timezone Europe/Rome \
-  --repo-folder /Users/alex/code/koda \
+  --repo-folder ~/code/project-a \
   --dry-run
 ```
 
