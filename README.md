@@ -17,6 +17,21 @@ The tool treats the original transcript stores as strictly read-only. It
 discovers sessions under each provider's storage directory, parses them in
 place, and writes the HTML archive to a separate output directory.
 
+## Screenshots
+
+The generated archive has two views. An **index** listing every user prompt
+across every session, searchable, with provider-colored borders so you can tell
+at a glance which tool drove which turn:
+
+![Index listing every user prompt across all sessions](docs/screenshots/index.png)
+
+And a **paginated timeline** showing concurrent sessions as side-by-side
+lanes grouped by minute — here, Claude Code writing the auth module on the
+left while a Codex session runs the test suite and investigates the failure
+on the right, on the same repo, at the same time:
+
+![Paginated timeline with concurrent Claude and Codex lanes](docs/screenshots/timeline.png)
+
 ## Prior art
 
 Inspired by Simon Willison's

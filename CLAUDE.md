@@ -44,6 +44,10 @@ If `.venv/` is missing, create it with `python3 -m venv .venv` before installing
 - `templates/` — HTML templates loaded at runtime (`page.html`, `index.html`).
 - `static/` — CSS and JS copied verbatim into the generated output directory.
 - `tests/` — pytest suite.
+- `scripts/` — dev tools. Notably `regenerate_screenshots.py` rebuilds the
+  README screenshots in `docs/screenshots/` from an inlined realistic
+  Claude + Codex scenario. Requires `npx` (for `agent-browser`). All
+  intermediates stay under `/tmp/`.
 
 ## Testing
 

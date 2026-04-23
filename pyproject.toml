@@ -26,6 +26,10 @@ ignore = [
 # Fixture files assemble split literals for secret-detection tests; some rules
 # (e.g. SIM or UP) would want to collapse them, which defeats the purpose.
 "tests/fixtures.py" = ["SIM", "UP"]
+# The screenshot generator embeds verbatim Jest/test-runner output which
+# legitimately contains Unicode characters (bullet, right angle) that look
+# like ASCII. RUF001 flags them as confusable; we don't care.
+"scripts/regenerate_screenshots.py" = ["RUF001"]
 
 [tool.ruff.format]
 quote-style = "double"
