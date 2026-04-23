@@ -66,7 +66,20 @@ def parse_args() -> argparse.Namespace:
         "--repo-folder",
         action="append",
         default=[],
-        help=("Repo/worktree folder to include. Can be passed more than once; subfolders match."),
+        help=("Repo folder to include. Can be passed more than once; subfolders match."),
+    )
+    parser.add_argument(
+        "--repo-folder-prefix",
+        action="append",
+        default=[],
+        help=(
+            "Repo-folder prefix match, typically for grouping git worktrees. Matches the "
+            "given path exactly or extended with /, -, _, or . — so `~/code/myproject` "
+            "catches `myproject`, `myproject-feature-x`, `myproject/subdir`, and "
+            "`myproject_hotfix`, but not e.g. `myprojects` or `myprojectapi` where the "
+            "next character would be part of the same word. Use `--repo-folder` for strict "
+            "subfolder-only matching. Repeatable."
+        ),
     )
     parser.add_argument(
         "--provider",
@@ -166,8 +179,25 @@ def normalize_repo_folders(values: list[str]) -> list[str]:
     return normalized
 
 
-def cwd_matches_repo(cwd: str, repo_folders: list[str]) -> bool:
-    if not repo_folders:
+def cwd_matches_prefix(cwd: str, prefix: str) -> bool:
+    """Prefix match that respects path/branch naming separators.
+
+    Returns True if `cwd` equals `prefix` or extends it with one of `/`, `-`,
+    `_`, or `.`. Keeps e.g. `/tmp/myrepo-feature` matching prefix
+    `/tmp/myrepo` while `/tmp/myrepository` does not. Callers are responsible
+    for normalizing both arguments (abspath, expanduser, rstrip sep).
+    """
+    if not cwd:
+        return False
+    if cwd == prefix:
+        return True
+    if not cwd.startswith(prefix):
+        return False
+    return cwd[len(prefix)] in "/-_."
+
+
+def cwd_matches_repo(cwd: str, repo_folders: list[str], repo_prefixes: list[str]) -> bool:
+    if not repo_folders and not repo_prefixes:
         return True
     if not cwd:
         return False
@@ -178,20 +208,24 @@ def cwd_matches_repo(cwd: str, repo_folders: list[str]) -> bool:
                 return True
         except ValueError:
             continue
-    return False
+    return any(cwd_matches_prefix(cwd_abs, prefix) for prefix in repo_prefixes)
 
 
-def repo_label_for(cwd: str, repo_folders: list[str]) -> str:
-    if cwd:
-        cwd_abs = os.path.abspath(os.path.expanduser(cwd)).rstrip(os.sep) or os.sep
-        for repo in repo_folders:
-            try:
-                if os.path.commonpath([cwd_abs, repo]) == repo:
-                    return repo
-            except ValueError:
-                continue
-        return cwd_abs
-    return "(unknown repo)"
+def repo_label_for(cwd: str, repo_folders: list[str], repo_prefixes: list[str]) -> str:
+    if not cwd:
+        return "(unknown repo)"
+    cwd_abs = os.path.abspath(os.path.expanduser(cwd)).rstrip(os.sep) or os.sep
+    for repo in repo_folders:
+        try:
+            if os.path.commonpath([cwd_abs, repo]) == repo:
+                return repo
+        except ValueError:
+            continue
+    for prefix in repo_prefixes:
+        if cwd_matches_prefix(cwd_abs, prefix):
+            # Group worktrees under the shared prefix so they share a chip.
+            return prefix
+    return cwd_abs
 
 
 def select_candidates(
@@ -199,14 +233,15 @@ def select_candidates(
     since: datetime | None,
     until: datetime | None,
     repo_folders: list[str],
+    repo_prefixes: list[str],
 ) -> list[SessionCandidate]:
     selected = []
     for candidate in candidates:
         if not session_overlaps_range(candidate, since, until):
             continue
-        if not cwd_matches_repo(candidate.cwd, repo_folders):
+        if not cwd_matches_repo(candidate.cwd, repo_folders, repo_prefixes):
             continue
-        candidate.repo_label = repo_label_for(candidate.cwd, repo_folders)
+        candidate.repo_label = repo_label_for(candidate.cwd, repo_folders, repo_prefixes)
         selected.append(candidate)
     return selected
 
@@ -239,6 +274,7 @@ def build_html_data(
     display_tz: tzinfo,
     timezone_label: str,
     repo_folders: list[str],
+    repo_prefixes: list[str],
 ) -> dict[str, Any]:
     active_session_ids = {event.session_id for event in events}
     sessions = []
@@ -255,7 +291,8 @@ def build_html_data(
                 "session_id": candidate.session_id,
                 "label": candidate.label,
                 "cwd": candidate.cwd,
-                "repo": candidate.repo_label or repo_label_for(candidate.cwd, repo_folders),
+                "repo": candidate.repo_label
+                or repo_label_for(candidate.cwd, repo_folders, repo_prefixes),
                 "started_at": isoformat_z(candidate.started_at),
                 "ended_at": isoformat_z(candidate.ended_at),
                 "summary": redact_secrets(candidate.summary),
@@ -685,20 +722,23 @@ def main() -> int:
     since = parse_cli_datetime(args.since, display_tz, is_until=False)
     until = parse_cli_datetime(args.until, display_tz, is_until=True)
     repo_folders = normalize_repo_folders(args.repo_folder)
+    repo_prefixes = normalize_repo_folders(args.repo_folder_prefix)
     providers = set(args.provider or ADAPTERS.keys())
 
     candidates = discover_all(providers, args)
-    selected = select_candidates(candidates, since, until, repo_folders)
+    selected = select_candidates(candidates, since, until, repo_folders, repo_prefixes)
 
     if args.dry_run:
         print_dry_run(selected, display_tz)
         return 0
 
     events = parse_events_for_candidates(selected, since, until)
-    if repo_folders:
-        events = [event for event in events if cwd_matches_repo(event.cwd, repo_folders)]
+    if repo_folders or repo_prefixes:
+        events = [
+            event for event in events if cwd_matches_repo(event.cwd, repo_folders, repo_prefixes)
+        ]
 
-    data = build_html_data(selected, events, display_tz, args.timezone, repo_folders)
+    data = build_html_data(selected, events, display_tz, args.timezone, repo_folders, repo_prefixes)
     output_dir = write_html_archive(args.output, data, args.page_prompts)
     index_path = output_dir / "index.html"
 

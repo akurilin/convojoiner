@@ -1,0 +1,2 @@
+{"type":"user","sessionId":"44444444-4444-4444-4444-444444444444","cwd":"/tmp/demo-repository","timestamp":"2020-05-01T13:00:00Z","message":{"content":"decoy-repo task: this is a completely different project"}}
+{"type":"assistant","sessionId":"44444444-4444-4444-4444-444444444444","cwd":"/tmp/demo-repository","timestamp":"2020-05-01T13:00:02Z","message":{"content":[{"type":"text","text":"Working in the demo-repository project, which shares a prefix with demo-repo but is unrelated."}]}}

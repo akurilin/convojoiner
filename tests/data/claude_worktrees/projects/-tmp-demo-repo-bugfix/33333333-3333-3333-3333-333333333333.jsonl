@@ -1,0 +1,2 @@
+{"type":"user","sessionId":"33333333-3333-3333-3333-333333333333","cwd":"/tmp/demo-repo-bugfix","timestamp":"2020-05-01T12:00:00Z","message":{"content":"bugfix-worktree task: fix the null-pointer crash on login"}}
+{"type":"assistant","sessionId":"33333333-3333-3333-3333-333333333333","cwd":"/tmp/demo-repo-bugfix","timestamp":"2020-05-01T12:00:02Z","message":{"content":[{"type":"text","text":"Reproducing the crash now in the bugfix worktree."}]}}

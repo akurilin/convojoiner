@@ -33,6 +33,7 @@ CLAUDE_FIXTURE = DATA_DIR / "claude" / "projects"
 CODEX_FIXTURE = DATA_DIR / "codex" / "sessions"
 CLINE_FIXTURE = DATA_DIR / "cline"
 CLAUDE_SECRET_FIXTURE = DATA_DIR / "claude_with_secret" / "projects"
+WORKTREES_FIXTURE = DATA_DIR / "claude_worktrees" / "projects"
 
 
 def run_cli(
@@ -188,6 +189,66 @@ def test_redaction_applied_end_to_end(tmp_path: Path) -> None:
     joined = "\n".join(output_texts)
     assert secret not in joined
     assert "[REDACTED:aws-access-key]" in joined
+
+
+def test_repo_folder_prefix_groups_worktrees(tmp_path: Path) -> None:
+    """Simulate a main repo, two worktrees (dashed suffix), a decoy repo that
+    shares a prefix but has a word-continuation boundary, and a fully unrelated
+    project. --repo-folder-prefix /tmp/demo-repo should include the first three
+    and exclude the last two."""
+    p = _common_paths(tmp_path)
+    result = run_cli(
+        output=p["output"],
+        claude_source=WORKTREES_FIXTURE,
+        codex_source=p["missing_codex"],
+        cline_source=p["missing_cline"],
+        extra=[
+            "--provider",
+            "claude",
+            "--repo-folder-prefix",
+            "/tmp/demo-repo",
+        ],
+    )
+
+    assert result.returncode == 0, result.stderr
+    index = (p["output"] / "index.html").read_text(encoding="utf-8")
+
+    # Three included: main repo + two worktrees
+    assert "main-branch task" in index
+    assert "feature-x-worktree task" in index
+    assert "bugfix-worktree task" in index
+
+    # Two excluded: similar-prefix decoy and unrelated project
+    assert "decoy-repo task" not in index
+    assert "other-project task" not in index
+
+
+def test_repo_folder_without_prefix_excludes_sibling_worktrees(tmp_path: Path) -> None:
+    """Sanity check that plain --repo-folder (strict containment) excludes
+    sibling worktrees — this is the behavior that motivated the new flag."""
+    p = _common_paths(tmp_path)
+    result = run_cli(
+        output=p["output"],
+        claude_source=WORKTREES_FIXTURE,
+        codex_source=p["missing_codex"],
+        cline_source=p["missing_cline"],
+        extra=[
+            "--provider",
+            "claude",
+            "--repo-folder",
+            "/tmp/demo-repo",
+        ],
+    )
+
+    assert result.returncode == 0, result.stderr
+    index = (p["output"] / "index.html").read_text(encoding="utf-8")
+
+    # Only the main repo matches; the worktree siblings are excluded.
+    assert "main-branch task" in index
+    assert "feature-x-worktree task" not in index
+    assert "bugfix-worktree task" not in index
+    assert "decoy-repo task" not in index
+    assert "other-project task" not in index
 
 
 @pytest.mark.parametrize(

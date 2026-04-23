@@ -1,0 +1,2 @@
+{"type":"user","sessionId":"11111111-1111-1111-1111-111111111111","cwd":"/tmp/demo-repo","timestamp":"2020-05-01T10:00:00Z","message":{"content":"main-branch task: bump the dependency versions"}}
+{"type":"assistant","sessionId":"11111111-1111-1111-1111-111111111111","cwd":"/tmp/demo-repo","timestamp":"2020-05-01T10:00:02Z","message":{"content":[{"type":"text","text":"On it — reviewing the package manifest now."}]}}

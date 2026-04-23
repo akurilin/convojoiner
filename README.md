@@ -55,7 +55,7 @@ that idea in a few directions:
 
 ## Usage
 
-Generate an HTML transcript for two worktrees since April 19, 2026:
+Generate an HTML transcript scoped to two separate projects since April 19, 2026:
 
 ```bash
 python3 convojoiner.py \
@@ -65,6 +65,25 @@ python3 convojoiner.py \
   --repo-folder ~/code/project-b \
   --output ./convojoiner
 ```
+
+If you use git worktrees heavily (`project`, `project-feature-x`,
+`project-bugfix`, …), `--repo-folder-prefix` catches all of them in one
+flag instead of listing each worktree path:
+
+```bash
+python3 convojoiner.py \
+  --since 2026-04-19 \
+  --repo-folder-prefix ~/code/project \
+  --output ./convojoiner
+```
+
+The prefix flag matches the given path exactly or extended with `/`, `-`,
+`_`, or `.`, so `~/code/project` catches worktrees like
+`project-feature-x` and `project_hotfix` as well as subdirectories like
+`project/docs`. A purely letter-continuing sibling like `~/code/projects`
+or `~/code/projectapi` will **not** match. Be aware that any sibling
+path starting with `project-` will be grouped too — if that matters,
+use `--repo-folder` instead for strict subfolder-only matching.
 
 Preview what would be selected without copying or writing output:
 

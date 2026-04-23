@@ -1,0 +1,2 @@
+{"type":"user","sessionId":"55555555-5555-5555-5555-555555555555","cwd":"/tmp/other-project","timestamp":"2020-05-01T14:00:00Z","message":{"content":"other-project task: unrelated work on a different project"}}
+{"type":"assistant","sessionId":"55555555-5555-5555-5555-555555555555","cwd":"/tmp/other-project","timestamp":"2020-05-01T14:00:02Z","message":{"content":[{"type":"text","text":"Working on something completely different."}]}}
