@@ -26,8 +26,13 @@ that idea in a few directions:
 
 - **Multiple local folders** — scope the archive to one or more repo/worktree
   paths with repeated `--repo-folder` flags.
-- **Multiple concurrent sessions** — sessions from different providers and tools
-  are laid out side-by-side in per-minute lanes rather than as a single linear log.
+- **Multiple concurrent sessions** — built for developers running several
+  coding agents in parallel on the same project, often from different vendors
+  (e.g. Claude Code in one terminal and Codex in another, both touching the
+  same repo or across a few worktrees of it). All sessions are laid out
+  side-by-side in per-minute lanes instead of collapsed into a single linear
+  log, so parallel work stays visually separate and easy to follow. This is
+  the core problem the tool was built to solve.
 - **Multiple providers** — Claude Code, Cline (the `saoudrizwan.claude-dev` VS
   Code extension), and Codex are parsed out of the box behind a common adapter
   interface, so adding another tool (OpenCode, Gemini, Amp, Cursor, Aider, …)
