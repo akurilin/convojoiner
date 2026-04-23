@@ -15,7 +15,7 @@ import webbrowser
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from string import Template
-from typing import Any, Callable
+from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import markdown
@@ -26,6 +26,7 @@ from adapters import (
     SessionCandidate,
     first_useful_summary,
 )
+from redaction import REDACTION_COUNTS, redact_secrets
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -35,61 +36,6 @@ COMMIT_OUTPUT_RE = re.compile(r"\[[\w\-/]+ ([a-f0-9]{7,})\] (.+?)(?:\n|$)", re.I
 DEFAULT_PROMPTS_PER_PAGE = 5
 ASSISTANT_INDEX_SUMMARY_CHARS = 900
 PROSE_KINDS = frozenset({"message", "thinking"})
-
-
-def _redact_db_password(match: re.Match[str]) -> str:
-    return f"{match.group(1)}[REDACTED:db-password]{match.group(3)}"
-
-
-SECRET_PATTERNS: list[tuple[str, re.Pattern[str], Callable[[re.Match[str]], str] | None]] = [
-    ("anthropic-key", re.compile(r"sk-ant-[A-Za-z0-9\-_]{90,}"), None),
-    ("openai-project-key", re.compile(r"sk-proj-[A-Za-z0-9\-_]{40,}"), None),
-    ("openai-key", re.compile(r"sk-[A-Za-z0-9]{48,}"), None),
-    ("github-token", re.compile(r"gh[pousr]_[A-Za-z0-9]{30,}"), None),
-    ("github-pat", re.compile(r"github_pat_[A-Za-z0-9_]{60,}"), None),
-    ("aws-access-key", re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"), None),
-    ("google-api-key", re.compile(r"\bAIza[0-9A-Za-z\-_]{35}\b"), None),
-    ("google-oauth-secret", re.compile(r"GOCSPX-[A-Za-z0-9_\-]{20,}"), None),
-    ("slack-token", re.compile(r"\bxox[bpars]-[A-Za-z0-9-]{10,}"), None),
-    ("stripe-live-key", re.compile(r"\b(?:sk|rk)_live_[A-Za-z0-9]{24,}\b"), None),
-    ("supabase-secret", re.compile(r"\bsb_secret_[A-Za-z0-9_\-]{20,}"), None),
-    ("supabase-publishable", re.compile(r"\bsb_publishable_[A-Za-z0-9_\-]{20,}"), None),
-    ("supabase-access-token", re.compile(r"\bsbp_[A-Za-z0-9]{40,}"), None),
-    (
-        "pem-private-key",
-        re.compile(
-            r"-----BEGIN (?:RSA |DSA |EC |OPENSSH |PGP )?PRIVATE KEY-----"
-            r"[\s\S]*?"
-            r"-----END (?:RSA |DSA |EC |OPENSSH |PGP )?PRIVATE KEY-----"
-        ),
-        None,
-    ),
-    (
-        "db-password",
-        re.compile(
-            r"(\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?)://[^:@\s/]+:)"
-            r"([^@\s/]+)"
-            r"(@[^\s\"'<>`]+)"
-        ),
-        _redact_db_password,
-    ),
-]
-
-REDACTION_COUNTS: dict[str, int] = {}
-
-
-def redact_secrets(text: str) -> str:
-    if not text:
-        return text
-    for name, pattern, formatter in SECRET_PATTERNS:
-        def replace(match: re.Match[str], _name: str = name, _formatter=formatter) -> str:
-            REDACTION_COUNTS[_name] = REDACTION_COUNTS.get(_name, 0) + 1
-            if _formatter is not None:
-                return _formatter(match)
-            return f"[REDACTED:{_name}]"
-
-        text = pattern.sub(replace, text)
-    return text
 
 
 def parse_args() -> argparse.Namespace:

@@ -92,3 +92,19 @@ Default source locations:
 
 Use `--claude-source` or `--codex-source` to point at copied or alternate stores.
 Use `--copy-root` when you want the copied JSONL files in a known directory.
+
+## Secret redaction
+
+All transcript content is passed through a redaction layer before being
+written to the archive. It combines Yelp's
+[`detect-secrets`](https://github.com/Yelp/detect-secrets) with a handful of
+custom detectors for keys the upstream library doesn't cover (Anthropic
+`sk-ant-*`, OpenAI project `sk-proj-*`, GitHub fine-grained `github_pat_*`,
+Google API / OAuth, Supabase new-format keys). Multi-line PEM private key
+blocks are redacted as a whole. Entropy-based and keyword-based detectors are
+intentionally disabled because they are noisy on code-containing transcripts.
+
+Redaction counts are summarized at the end of each run. The test suite in
+`tests/test_redaction.py` verifies detection for every enabled plugin using
+split-literal fixtures so that no complete secret-looking string ever lives in
+the repo.
