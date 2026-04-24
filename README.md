@@ -33,12 +33,16 @@ at a glance which tool drove which turn:
 
 ![Index listing every user prompt across all sessions](docs/screenshots/index.png)
 
+[View this index live →](https://akurilin.github.io/convojoiner/index.html)
+
 And a **paginated timeline** showing concurrent sessions as side-by-side
 lanes grouped by minute — here, Claude Code writing the auth module on the
 left while a Codex session runs the test suite and investigates the failure
 on the right, on the same repo, at the same time:
 
 ![Paginated timeline with concurrent Claude and Codex lanes](docs/screenshots/timeline.png)
+
+[View this timeline live →](https://akurilin.github.io/convojoiner/page-001.html)
 
 ## Prior art
 
@@ -55,7 +59,8 @@ that idea in a few directions:
   same repo or across a few worktrees of it). All sessions are laid out
   side-by-side in per-minute lanes instead of collapsed into a single linear
   log, so parallel work stays visually separate and easy to follow. This is
-  the core problem the tool was built to solve.
+  the core problem the tool was built to solve. ([See it in action on the
+  live demo →](https://akurilin.github.io/convojoiner/page-001.html))
 - **Multiple providers** — Claude Code, Cline (the `saoudrizwan.claude-dev` VS
   Code extension), and Codex are parsed out of the box behind a common adapter
   interface, so adding another tool (OpenCode, Gemini, Amp, Cursor, Aider, …)
@@ -127,12 +132,14 @@ python3 convojoiner.py --no-subagents
 
 The generated archive contains:
 
-- `index.html`: an index page with prompt cards, deterministic final-response
-  excerpts, tool counts, commit cards extracted from git output, stats, search,
-  and links to every transcript page.
-- `page-001.html`, `page-002.html`, and so on: precomputed transcript pages,
-  each containing a fixed number of user prompt turns. Use `--page-prompts` to
-  change the default of 5 prompt turns per page.
+- [`index.html`](https://akurilin.github.io/convojoiner/index.html): an index
+  page with prompt cards, deterministic final-response excerpts, tool counts,
+  commit cards extracted from git output, stats, search, and links to every
+  transcript page.
+- [`page-001.html`](https://akurilin.github.io/convojoiner/page-001.html),
+  `page-002.html`, and so on: precomputed transcript pages, each containing
+  a fixed number of user prompt turns. Use `--page-prompts` to change the
+  default of 5 prompt turns per page.
 
 Each transcript page renders one column per session or subagent that has events
 on that page, grouped by minute so concurrent work stays visually separated
