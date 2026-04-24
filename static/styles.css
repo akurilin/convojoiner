@@ -168,7 +168,7 @@ main { max-width: 1680px; margin: 0 auto; padding: 16px; }
 .session-meta { color: var(--muted); font-size: 0.78rem; margin-top: 3px; }
 
 .timeline-scroll { padding-bottom: 32px; overflow: visible; }
-.lane-grid { display: grid; gap: 8px; align-items: start; min-width: min-content; }
+.lane-grid { display: grid; gap: 8px; align-items: start; min-width: min-content; justify-content: center; }
 
 .corner-cell { position: sticky; top: 0; z-index: 6; background: var(--bg); }
 .lane-header, .time-cell { background: var(--bg); }
