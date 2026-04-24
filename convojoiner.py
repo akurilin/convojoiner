@@ -394,6 +394,11 @@ def write_html_archive(output: Path, data: dict[str, Any], prompts_per_page: int
 
     total_pages = max(1, (len(turns) + prompts_per_page - 1) // prompts_per_page)
     session_by_id = {session["id"]: session for session in data["sessions"]}
+    all_providers = sorted(
+        {session["provider"] for session in data["sessions"] if session.get("provider")}
+    )
+    all_repos = sorted({session["repo"] for session in data["sessions"] if session.get("repo")})
+    all_detail_groups = ["commands", "results", "patches", "web", "thinking", "status", "tools"]
     for page_num in range(1, total_pages + 1):
         start = (page_num - 1) * prompts_per_page
         end = start + prompts_per_page
@@ -412,6 +417,9 @@ def write_html_archive(output: Path, data: dict[str, Any], prompts_per_page: int
             "page": page_num,
             "total_pages": total_pages,
             "total_events": len(data["events"]),
+            "all_providers": all_providers,
+            "all_repos": all_repos,
+            "all_detail_groups": all_detail_groups,
         }
         write_page_html(
             output_dir / page_filename(page_num), page_data, page_template, provider_styles

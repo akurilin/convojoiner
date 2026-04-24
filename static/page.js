@@ -12,6 +12,37 @@ const DETAIL_GROUPS = [
 ];
 const detailGroupById = new Map(DETAIL_GROUPS.map(group => [group.id, group]));
 
+const ALL_PROVIDERS = (data.all_providers && data.all_providers.length)
+  ? data.all_providers.slice()
+  : unique(data.sessions.map(s => s.provider));
+const ALL_REPOS = (data.all_repos && data.all_repos.length)
+  ? data.all_repos.slice()
+  : unique(data.sessions.map(s => s.repo));
+const ALL_DETAIL_GROUPS = (data.all_detail_groups && data.all_detail_groups.length)
+  ? data.all_detail_groups.slice()
+  : DETAIL_GROUPS.map(g => g.id).filter(id => data.events.some(e => detailGroupForEvent(e) === id));
+
+const FILTER_ALL_VALUES = { provider: ALL_PROVIDERS, repo: ALL_REPOS, detail: ALL_DETAIL_GROUPS };
+
+function readUrlState() {
+  const params = new URL(window.location.href).searchParams;
+  const filterFromParams = name => params.has(name)
+    ? new Set(params.getAll(name).filter(v => v !== ""))
+    : null;
+  return {
+    q: params.get("q") || "",
+    provider: filterFromParams("provider"),
+    repo: filterFromParams("repo"),
+    detail: filterFromParams("detail"),
+    dense: params.has("dense"),
+    expand: params.has("expand")
+  };
+}
+const URL_STATE = readUrlState();
+state.query = URL_STATE.q.toLowerCase().trim();
+state.dense = URL_STATE.dense;
+state.expandDetails = URL_STATE.expand;
+
 function unique(values) {
   return Array.from(new Set(values.filter(Boolean))).sort();
 }
@@ -43,15 +74,17 @@ function escapeHtml(value) {
   }[char]));
 }
 
-function makeCheckboxes(containerId, name, values, labeler = value => value) {
+function makeCheckboxes(containerId, name, values, initialSelection, labeler = value => value) {
   const container = document.getElementById(containerId);
+  const isChecked = value => initialSelection === null || initialSelection.has(value);
   container.innerHTML = values.map(value => `
     <label class="chip" title="${escapeHtml(value)}">
-      <input type="checkbox" name="${name}" value="${escapeHtml(value)}" checked>
+      <input type="checkbox" name="${name}" value="${escapeHtml(value)}"${isChecked(value) ? " checked" : ""}>
       <span>${escapeHtml(labeler(value))}</span>
     </label>
   `).join("");
   container.querySelectorAll("input").forEach(input => input.addEventListener("change", () => {
+    syncUrlState();
     render();
   }));
 }
@@ -60,27 +93,74 @@ function selectedValues(name) {
   return new Set(Array.from(document.querySelectorAll(`input[name="${name}"]:checked`)).map(input => input.value));
 }
 
-function initFilters() {
-  makeCheckboxes("provider-filter", "provider", unique(data.sessions.map(s => s.provider)));
-  makeCheckboxes("day-filter", "day", unique(data.events.map(e => e.day)));
-  makeCheckboxes("repo-filter", "repo", unique(data.sessions.map(s => s.repo)), value => value.split("/").filter(Boolean).slice(-2).join("/") || value);
-  const detailGroups = DETAIL_GROUPS
-    .map(group => group.id)
-    .filter(id => data.events.some(event => detailGroupForEvent(event) === id));
-  makeCheckboxes("detail-filter", "detail", detailGroups, value => detailGroupById.get(value)?.label || value);
+function syncUrlState() {
+  const url = new URL(window.location.href);
+  const params = new URLSearchParams();
+  if (state.query) params.set("q", state.query);
+  for (const [name, allValues] of Object.entries(FILTER_ALL_VALUES)) {
+    const selected = selectedValues(name);
+    const allChecked = allValues.length === selected.size && allValues.every(v => selected.has(v));
+    if (allChecked) continue;
+    if (selected.size === 0) {
+      params.set(name, "");
+      continue;
+    }
+    for (const value of allValues) {
+      if (selected.has(value)) params.append(name, value);
+    }
+  }
+  if (state.dense) params.set("dense", "1");
+  if (state.expandDetails) params.set("expand", "1");
+  const newSearch = params.toString();
+  if (newSearch !== url.searchParams.toString()) {
+    url.search = newSearch;
+    history.replaceState(null, "", url.toString());
+  }
+  updateNavLinks();
+}
 
-  document.getElementById("search-input").addEventListener("input", event => {
+function updateNavLinks() {
+  const search = window.location.search;
+  document.querySelectorAll('.pagination a, .topbar h1 a').forEach(anchor => {
+    const href = anchor.getAttribute("href") || "";
+    if (/^[a-z]+:|^\/\//i.test(href)) return;
+    const hashIdx = href.indexOf("#");
+    const hash = hashIdx >= 0 ? href.slice(hashIdx) : "";
+    const queryIdx = href.indexOf("?");
+    const base = href.slice(0, queryIdx >= 0 ? queryIdx : (hashIdx >= 0 ? hashIdx : href.length));
+    anchor.setAttribute("href", base + search + hash);
+  });
+}
+
+function initFilters() {
+  makeCheckboxes("provider-filter", "provider", ALL_PROVIDERS, URL_STATE.provider);
+  makeCheckboxes("day-filter", "day", unique(data.events.map(e => e.day)), null);
+  makeCheckboxes("repo-filter", "repo", ALL_REPOS, URL_STATE.repo, value => value.split("/").filter(Boolean).slice(-2).join("/") || value);
+  makeCheckboxes("detail-filter", "detail", ALL_DETAIL_GROUPS, URL_STATE.detail, value => detailGroupById.get(value)?.label || value);
+
+  const searchInput = document.getElementById("search-input");
+  searchInput.value = URL_STATE.q;
+  searchInput.addEventListener("input", event => {
     state.query = event.target.value.toLowerCase().trim();
+    syncUrlState();
     render();
   });
-  document.getElementById("dense-toggle").addEventListener("change", event => {
+  const denseToggle = document.getElementById("dense-toggle");
+  denseToggle.checked = state.dense;
+  denseToggle.addEventListener("change", event => {
     state.dense = event.target.checked;
+    syncUrlState();
     render();
   });
-  document.getElementById("expand-details-toggle").addEventListener("change", event => {
+  const expandToggle = document.getElementById("expand-details-toggle");
+  expandToggle.checked = state.expandDetails;
+  expandToggle.addEventListener("change", event => {
     state.expandDetails = event.target.checked;
+    syncUrlState();
     applyDetailExpansion();
   });
+
+  updateNavLinks();
 }
 
 function filteredEvents() {

@@ -251,6 +251,70 @@ def test_repo_folder_without_prefix_excludes_sibling_worktrees(tmp_path: Path) -
     assert "other-project task" not in index
 
 
+def test_pages_embed_full_archive_option_lists(tmp_path: Path) -> None:
+    """Each page's embedded JSON should carry the union of providers / repos /
+    detail groups across the full archive so URL-driven filter selections
+    remain meaningful as the user paginates. Pagination links themselves stay
+    bare in the HTML — the JS forwards location.search at runtime."""
+    import json
+    import re
+
+    p = _common_paths(tmp_path)
+    result = run_cli(
+        output=p["output"],
+        claude_source=CLAUDE_FIXTURE,
+        codex_source=CODEX_FIXTURE,
+        cline_source=CLINE_FIXTURE,
+        extra=["--page-prompts", "1"],
+    )
+    assert result.returncode == 0, result.stderr
+
+    page_paths = sorted(p["output"].glob("page-*.html"))
+    assert len(page_paths) >= 2, "need multiple pages to validate cross-page state"
+
+    seen_provider_unions: set[tuple[str, ...]] = set()
+    seen_repo_unions: set[tuple[str, ...]] = set()
+    for page_path in page_paths:
+        page_html = page_path.read_text(encoding="utf-8")
+        match = re.search(
+            r'<script id="transcript-data" type="application/json">(.*?)</script>',
+            page_html,
+            re.DOTALL,
+        )
+        assert match, f"no transcript-data block in {page_path.name}"
+        page_data = json.loads(match.group(1).replace("<\\/", "</"))
+
+        assert "all_providers" in page_data
+        assert "all_repos" in page_data
+        assert "all_detail_groups" in page_data
+
+        # The union must include providers that don't necessarily appear on
+        # this specific page — that's the whole point.
+        assert {"claude", "codex", "cline"}.issubset(set(page_data["all_providers"]))
+        assert page_data["all_detail_groups"] == [
+            "commands",
+            "results",
+            "patches",
+            "web",
+            "thinking",
+            "status",
+            "tools",
+        ]
+
+        seen_provider_unions.add(tuple(page_data["all_providers"]))
+        seen_repo_unions.add(tuple(page_data["all_repos"]))
+
+        # Pagination anchors should be bare; URL forwarding happens client-side.
+        nav_hrefs = re.findall(r'<a[^>]+href="(page-\d+\.html)"', page_html)
+        assert nav_hrefs, f"no pagination anchors in {page_path.name}"
+        for href in nav_hrefs:
+            assert "?" not in href
+
+    # Identical archive-wide unions across every page.
+    assert len(seen_provider_unions) == 1
+    assert len(seen_repo_unions) == 1
+
+
 @pytest.mark.parametrize(
     "cli_extra,expected_error_fragment",
     [
