@@ -464,9 +464,18 @@ def write_fixtures() -> None:
             f.write(json.dumps(ev) + "\n")
 
 
-def run_convojoiner() -> None:
-    if DEMO_OUT.exists():
-        shutil.rmtree(DEMO_OUT)
+def run_convojoiner(output_dir: Path = DEMO_OUT) -> None:
+    """Run the CLI against the /tmp demo sources, writing to `output_dir`.
+
+    The CLI itself only clears `page-*.html` and replaces `static/` inside the
+    output dir, so unrelated files (e.g. docs/screenshots/) survive. Callers
+    that want a fully clean slate (the screenshot script) should rmtree the
+    target before calling.
+
+    `--timezone UTC` is pinned so the resulting display_time/day fields don't
+    depend on the local TZ of whoever runs this — a regen on a laptop in
+    Europe must produce the same output as one in California.
+    """
     result = subprocess.run(
         [
             sys.executable,
@@ -479,8 +488,10 @@ def run_convojoiner() -> None:
             "/tmp/convojoiner-demo-no-cline",
             "--since",
             "2026-04-14",
+            "--timezone",
+            "UTC",
             "-o",
-            str(DEMO_OUT),
+            str(output_dir),
         ],
         capture_output=True,
         text=True,
@@ -547,7 +558,9 @@ def main() -> int:
     print("Writing demo fixtures to /tmp...")
     write_fixtures()
     print("Running convojoiner to generate HTML...")
-    run_convojoiner()
+    if DEMO_OUT.exists():
+        shutil.rmtree(DEMO_OUT)
+    run_convojoiner(DEMO_OUT)
     print("Capturing screenshots via agent-browser...")
     capture_screenshots()
     print("Copying screenshots into docs/screenshots/...")

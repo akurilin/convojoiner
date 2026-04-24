@@ -329,7 +329,6 @@ def build_html_data(
         )
 
     return {
-        "generated_at": isoformat_z(datetime.now(UTC)),
         "timezone": timezone_label,
         "repo_folders": repo_folders,
         "sessions": sessions,
