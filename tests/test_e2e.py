@@ -46,7 +46,7 @@ def run_cli(
 ) -> subprocess.CompletedProcess[str]:
     args = [
         sys.executable,
-        str(REPO_ROOT / "convojoiner.py"),
+        str(REPO_ROOT / "multitrack.py"),
         "--claude-source",
         str(claude_source),
         "--codex-source",

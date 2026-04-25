@@ -2,7 +2,7 @@
 """Regenerate the README screenshots in docs/screenshots/.
 
 Writes a realistic concurrent Claude + Codex scenario into /tmp, runs the
-real convojoiner CLI against it, drives `npx agent-browser` to capture two
+real multitrack CLI against it, drives `npx agent-browser` to capture two
 screenshots (index + page-001), copies them into docs/screenshots/, and
 cleans up /tmp.
 
@@ -27,10 +27,10 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCREENSHOTS_DIR = REPO_ROOT / "docs" / "screenshots"
 
-DEMO_SOURCES = Path("/tmp/convojoiner-demo-sources")
-DEMO_OUT = Path("/tmp/convojoiner-demo-out")
-DEMO_INDEX_SHOT = Path("/tmp/convojoiner-demo-index.png")
-DEMO_TIMELINE_SHOT = Path("/tmp/convojoiner-demo-timeline.png")
+DEMO_SOURCES = Path("/tmp/multitrack-demo-sources")
+DEMO_OUT = Path("/tmp/multitrack-demo-out")
+DEMO_INDEX_SHOT = Path("/tmp/multitrack-demo-index.png")
+DEMO_TIMELINE_SHOT = Path("/tmp/multitrack-demo-timeline.png")
 
 CWD = "/Users/dev/code/api-service"
 BASE = datetime(2026, 4, 15, 10, 0, 0, tzinfo=UTC)
@@ -464,7 +464,7 @@ def write_fixtures() -> None:
             f.write(json.dumps(ev) + "\n")
 
 
-def run_convojoiner(output_dir: Path = DEMO_OUT) -> None:
+def run_multitrack(output_dir: Path = DEMO_OUT) -> None:
     """Run the CLI against the /tmp demo sources, writing to `output_dir`.
 
     The CLI itself only clears `page-*.html` and replaces `static/` inside the
@@ -479,13 +479,13 @@ def run_convojoiner(output_dir: Path = DEMO_OUT) -> None:
     result = subprocess.run(
         [
             sys.executable,
-            str(REPO_ROOT / "convojoiner.py"),
+            str(REPO_ROOT / "multitrack.py"),
             "--claude-source",
             str(DEMO_SOURCES / "claude" / "projects"),
             "--codex-source",
             str(DEMO_SOURCES / "codex" / "sessions"),
             "--cline-source",
-            "/tmp/convojoiner-demo-no-cline",
+            "/tmp/multitrack-demo-no-cline",
             "--since",
             "2026-04-14",
             "--timezone",
@@ -500,7 +500,7 @@ def run_convojoiner(output_dir: Path = DEMO_OUT) -> None:
     if result.returncode != 0:
         print(result.stdout)
         print(result.stderr, file=sys.stderr)
-        raise SystemExit("convojoiner run failed")
+        raise SystemExit("multitrack run failed")
 
 
 def _browser(*args: str) -> subprocess.CompletedProcess:
@@ -557,10 +557,10 @@ def cleanup_tmp() -> None:
 def main() -> int:
     print("Writing demo fixtures to /tmp...")
     write_fixtures()
-    print("Running convojoiner to generate HTML...")
+    print("Running multitrack to generate HTML...")
     if DEMO_OUT.exists():
         shutil.rmtree(DEMO_OUT)
-    run_convojoiner(DEMO_OUT)
+    run_multitrack(DEMO_OUT)
     print("Capturing screenshots via agent-browser...")
     capture_screenshots()
     print("Copying screenshots into docs/screenshots/...")

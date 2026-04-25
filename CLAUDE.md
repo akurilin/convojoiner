@@ -1,4 +1,4 @@
-# convojoiner
+# multitrack
 
 ## Source session files are read-only — never modify or delete them
 
@@ -38,7 +38,7 @@ If `.venv/` is missing, create it with `python3 -m venv .venv` before installing
 
 ## Layout
 
-- `convojoiner.py` — CLI entry point and parsing/rendering logic.
+- `multitrack.py` — CLI entry point and parsing/rendering logic.
 - `adapters/` — provider adapter registry (Claude, Codex, extensible).
 - `redaction.py` — secret detection via `detect-secrets` + custom plugins.
 - `templates/` — HTML templates loaded at runtime (`page.html`, `index.html`).
@@ -68,7 +68,7 @@ followed by:
 ```
 
 Then commit the resulting `docs/` diff alongside the change. Otherwise
-the published demo at <https://akurilin.github.io/convojoiner/> drifts
+the published demo at <https://akurilin.github.io/multitrack/> drifts
 behind the codebase and stops being a faithful preview.
 
 The regen is **deterministic by design** — running it twice on an

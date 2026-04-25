@@ -2,7 +2,7 @@
 """Regenerate the GitHub Pages demo site at docs/.
 
 Reuses the same realistic Claude + Codex scenario as the README screenshots,
-runs the real convojoiner CLI against it, and writes the resulting archive
+runs the real multitrack CLI against it, and writes the resulting archive
 into docs/ so GitHub Pages can serve it directly. Existing docs/screenshots/
 PNGs are left untouched (the CLI only clears page-*.html and replaces
 static/ in the output directory).
@@ -33,7 +33,7 @@ sys.path.insert(0, str(REPO_ROOT / "scripts"))
 
 from regenerate_screenshots import (  # noqa: E402  (sys.path setup must precede)
     DEMO_SOURCES,
-    run_convojoiner,
+    run_multitrack,
     write_fixtures,
 )
 
@@ -43,7 +43,7 @@ def write_nojekyll() -> None:
 
     Without this, GH Pages treats the docs/ tree as a Jekyll source. Our
     static archive doesn't need that pipeline, and Jekyll silently skips
-    paths starting with `_`, which would silently break links if convojoiner
+    paths starting with `_`, which would silently break links if multitrack
     ever generated such names.
     """
     (DOCS_DIR / ".nojekyll").write_text("", encoding="utf-8")
@@ -57,8 +57,8 @@ def cleanup_tmp_sources() -> None:
 def main() -> int:
     print("Writing demo fixtures to /tmp...")
     write_fixtures()
-    print(f"Running convojoiner against demo dataset, output -> {DOCS_DIR}")
-    run_convojoiner(DOCS_DIR)
+    print(f"Running multitrack against demo dataset, output -> {DOCS_DIR}")
+    run_multitrack(DOCS_DIR)
     print("Writing docs/.nojekyll...")
     write_nojekyll()
     print("Cleaning up /tmp source fixtures...")

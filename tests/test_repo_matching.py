@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from convojoiner import cwd_matches_prefix, cwd_matches_repo, repo_label_for
+from multitrack import cwd_matches_prefix, cwd_matches_repo, repo_label_for
 
 
 class TestCwdMatchesPrefix:
